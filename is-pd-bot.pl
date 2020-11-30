@@ -38,9 +38,13 @@ signal_add_last 'message public' => sub {
         elsif ($nick eq 'webbot') {
             $msg =~ s/^/\x0314/g;
         } else {
+            Irssi::command('^format -reset pubmsg');
+            Irssi::command('^format -reset pubmsg_hilight');
             return;
         }
     } else {
+        Irssi::command('^format -reset pubmsg');
+        Irssi::command('^format -reset pubmsg_hilight');
         return;
     }
 
