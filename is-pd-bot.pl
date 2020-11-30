@@ -29,7 +29,7 @@ signal_add_last 'message public' => sub {
 
     # webbot noise
     elsif ($nick eq 'webbot') {
-        $msg =~ s/\[/\x0314/g;
+        $msg =~ s/\[/\x0314[/g;
     }
 
     elsif (($target eq '#is-outage') && ($nick eq 'is-pd-bot')) {
