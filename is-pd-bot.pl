@@ -38,16 +38,23 @@ signal_add_last 'message public' => sub {
         elsif ($nick eq 'webbot') {
             $msg =~ s/^/\x0314/g;
         } else {
-            Irssi::command('^format -reset pubmsg');
-            Irssi::command('^format -reset pubmsg_hilight');
+            if ($ENABLED) {
+                Irssi::command('^format -reset pubmsg');
+                Irssi::command('^format -reset pubmsg_hilight');
+                $ENABLED = 0;
+            }
             return;
         }
     } else {
-        Irssi::command('^format -reset pubmsg');
-        Irssi::command('^format -reset pubmsg_hilight');
+        if ($ENABLED) {
+            Irssi::command('^format -reset pubmsg');
+            Irssi::command('^format -reset pubmsg_hilight');
+            $ENABLED = 0;
+        }
         return;
     }
 
+    $ENABLED = 1;
     # From src/fe-common/core/module-formats.c.
     Irssi::command('^format pubmsg {pubmsgnick $2 {pubnick $0}}' . $msg);
     Irssi::command('^format pubmsg_hilight {pubmsghinick $0 $3 $1}' . $msg);
