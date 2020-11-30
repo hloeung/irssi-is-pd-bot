@@ -19,24 +19,24 @@ signal_add_last 'message public' => sub {
     my($server, $msg, $nick, $address, $target) = @_;
 
     if (($target eq '#is-pagerduty') && ($nick eq 'is-pd-bot')) {
-        $msg =~ s/\*\*🆗 ACKNOWLEDGED\*\*/\x02\x0307🆗 ACKNOWLEDGED\x0f/g;
-        $msg =~ s/\*\*📥 ASSIGNED\*\*/\x02\x0308📥 ASSIGNED\x0f/g;
-        $msg =~ s/\*\*📤 ESCALATED\*\*/\x02\x0306📤 ESCALATED\x0f/g;
-        $msg =~ s/\*\*✅ RESOLVED\*\*/\x02\x0303✅ RESOLVED\x0f/g;
-        $msg =~ s/\*\*🚨 TRIGGERED\*\*/\x02\x0304🚨 TRIGGERED\x0f/g;
-        $msg =~ s/\*\*‼️ UNACKNOWLEDGED\*\*/\x02\x0304‼️  UNACKNOWLEDGED\x0f/g;
+        $msg =~ s/\*\*🆗 ACKNOWLEDGED\*\*/\x02\x0307🆗 ACKNOWLEDGED\x0f/;
+        $msg =~ s/\*\*📥 ASSIGNED\*\*/\x02\x0308📥 ASSIGNED\x0f/;
+        $msg =~ s/\*\*📤 ESCALATED\*\*/\x02\x0306📤 ESCALATED\x0f/;
+        $msg =~ s/\*\*✅ RESOLVED\*\*/\x02\x0303✅ RESOLVED\x0f/;
+        $msg =~ s/\*\*🚨 TRIGGERED\*\*/\x02\x0304🚨 TRIGGERED\x0f/;
+        $msg =~ s/\*\*‼️ UNACKNOWLEDGED\*\*/\x02\x0304‼️  UNACKNOWLEDGED\x0f/;
     }
 
     # webbot noise
     elsif ($nick eq 'webbot') {
-        $msg =~ s/\[/\x0314[/g;
+        $msg =~ s/\[/\x0314[/;
     }
 
     elsif (($target eq '#is-outage') && ($nick eq 'is-pd-bot')) {
-        $msg =~ s/:white_check_mark: Incident/\x02\x0303✅\x0f Incident/g;
-        $msg =~ s/now resolved\./\x02\x0303now resolved\x0f./g;
-        $msg =~ s/:rotating_light: Incident/\x02\x0307🚨\x0f Incident/g;
-        $msg =~ s/taking a look\./\x02\x0307taking a look\x0f./g;
+        $msg =~ s/:white_check_mark: Incident/\x02\x0303✅\x0f Incident/;
+        $msg =~ s/now resolved\./\x02\x0303now resolved\x0f./;
+        $msg =~ s/:rotating_light: Incident/\x02\x0307🚨\x0f Incident/;
+        $msg =~ s/taking a look\./\x02\x0307taking a look\x0f./;
     }
 
     else {
