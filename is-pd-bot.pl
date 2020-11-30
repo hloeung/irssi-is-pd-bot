@@ -15,16 +15,8 @@ our %IRSSI = (
 );
 
 
-my $ENABLED = 0;
-
 signal_add_last 'message public' => sub {
     my($server, $msg, $nick, $address, $target) = @_;
-
-    if ($ENABLED) {
-        Irssi::command('^format -reset pubmsg');
-        Irssi::command('^format -reset pubmsg_hilight');
-        $ENABLED = 0;
-    }
 
     if (($target eq '#is-pagerduty') && ($nick eq 'is-pd-bot')) {
         $msg =~ s/\*\*🆗 ACKNOWLEDGED\*\*/\x02\x0307🆗 ACKNOWLEDGED\x0f/g;
@@ -51,8 +43,5 @@ signal_add_last 'message public' => sub {
         return;
     }
 
-    $ENABLED = 1;
-    # From src/fe-common/core/module-formats.c.
-    Irssi::command('^format pubmsg {pubmsgnick $2 {pubnick $0}}' . $msg);
-    Irssi::command('^format pubmsg_hilight {pubmsghinick $0 $3 $1}' . $msg);
+    Irssi::signal_continue($server, $msg, $nick, $address, $target);
 };
