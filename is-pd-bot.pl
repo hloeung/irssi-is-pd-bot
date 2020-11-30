@@ -27,12 +27,12 @@ signal_add_last 'message public' => sub {
     }
 
     if (($target eq '#is-pagerduty') && ($nick eq 'is-pd-bot')) {
-        $msg =~ s/:ok: ACKNOWLEDGED/\x02\x0307🆗 ACKNOWLEDGED\x0f/g;
-        $msg =~ s/:inbox_tray: ASSIGNED/\x02\x0308📥 ASSIGNED\x0f/g;
-        $msg =~ s/:outbox_tray: ESCALATED/\x02\x0306📤 ESCALATED\x0f/g;
-        $msg =~ s/:white_check_mark: RESOLVED/\x02\x0303✅ RESOLVED\x0f/g;
-        $msg =~ s/:rotating_light: TRIGGERED/\x02\x0304🚨 TRIGGERED\x0f/g;
-        $msg =~ s/:bangbang: UNACKNOWLEDGED/\x02\x0304‼️  UNACKNOWLEDGED\x0f/g;
+        $msg =~ s/\*\*🆗 ACKNOWLEDGED\*\*/\x02\x0307🆗 ACKNOWLEDGED\x0f/g;
+        $msg =~ s/\*\*📥 ASSIGNED\*\*/\x02\x0308📥 ASSIGNED\x0f/g;
+        $msg =~ s/\*\*📤 ESCALATED\*\*/\x02\x0306📤 ESCALATED\x0f/g;
+        $msg =~ s/\*\*✅ RESOLVED\*\*/\x02\x0303✅ RESOLVED\x0f/g;
+        $msg =~ s/\*\*🚨 TRIGGERED\*\*/\x02\x0304🚨 TRIGGERED\x0f/g;
+        $msg =~ s/\*\*‼️ UNACKNOWLEDGED\*\*/\x02\x0304‼️  UNACKNOWLEDGED\x0f/g;
     }
 
     # webbot noise
