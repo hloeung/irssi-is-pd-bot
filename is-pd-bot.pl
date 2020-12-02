@@ -2,7 +2,7 @@ use strict;
 use warnings;
 use experimental 'smartmatch';
 
-use Irssi qw(signal_add_last);
+use Irssi qw(settings_add_str settings_get_str signal_add_last);
 
 
 our $VERSION = '1.00';
@@ -14,9 +14,13 @@ our %IRSSI = (
     license     => 'GPL',
 );
 
+settings_add_str('matterircd_complete', 'matterircd_complete_networks', '');
 
 signal_add_last 'message public' => sub {
     my($server, $msg, $nick, $address, $target) = @_;
+
+    my %chatnets = map { $_ => 1 } split(/\s+/, settings_get_str('matterircd_complete_networks'));
+    return unless exists $chatnets{'*'} || exists $chatnets{$server->{chatnet}};
 
     if (($target eq '#is-pagerduty') && ($nick eq 'is-pd-bot')) {
         $msg =~ s/^((?:\[(?:@@)?\w+\] )?\w{7}) \*\*🆗 ACKNOWLEDGED\*\*/$1 \x02\x0307🆗 ACKNOWLEDGED\x0f/;
