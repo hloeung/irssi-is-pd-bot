@@ -2,7 +2,7 @@ use strict;
 use warnings;
 use experimental 'smartmatch';
 
-use Irssi qw(settings_add_str settings_get_str signal_add_last);
+use Irssi qw(command_bind settings_add_str settings_get_str signal_add_last);
 
 
 our $VERSION = '1.00';
@@ -16,6 +16,21 @@ our %IRSSI = (
 
 settings_add_str('matterircd_complete', 'matterircd_complete_networks', '');
 
+my @PD_CACHE;
+command_bind 'pagerduty_cache_dump' => sub {
+    my ($data, $server, $wi) = @_;
+
+    my %chatnets = map { $_ => 1 } split(/\s+/, settings_get_str('matterircd_complete_networks'));
+    return unless exists $chatnets{'*'} || exists $chatnets{$server->{chatnet}};
+
+    if (scalar(@PD_CACHE) == 0) {
+        Irssi::print('Empty PagerDuty incidents cache');
+    }
+    foreach my $pd_id (@PD_CACHE) {
+        Irssi::print($pd_id);
+    }
+};
+
 signal_add_last 'message public' => sub {
     my($server, $msg, $nick, $address, $target) = @_;
 
@@ -23,12 +38,24 @@ signal_add_last 'message public' => sub {
     return unless exists $chatnets{'*'} || exists $chatnets{$server->{chatnet}};
 
     if (($target eq '#is-pagerduty') && ($nick eq 'is-pd-bot')) {
+        my $pd_id;
         $msg =~ s/^((?:\[(?:@@)?\w+\] )?\w{7}) \*\*🆗 ACKNOWLEDGED\*\*/$1 \x02\x0307🆗 ACKNOWLEDGED\x0f/;
         $msg =~ s/^((?:\[(?:@@)?\w+\] )?\w{7}) \*\*📥 ASSIGNED\*\*/$1 \x02\x0308📥 ASSIGNED\x0f/;
-        $msg =~ s/^((?:\[(?:@@)?\w+\] )?\w{7}) \*\*📤 ESCALATED\*\*/$1 \x02\x0306📤 ESCALATED\x0f/;
+        if ($msg =~ s/^((?:\[(?:@@)?\w+\] )?(\w{7})) \*\*📤 ESCALATED\*\*/$1 \x02\x0306📤 ESCALATED\x0f/) {
+            $pd_id = $2;
+        }
         $msg =~ s/^((?:\[(?:@@)?\w+\] )?\w{7}) \*\*✅ RESOLVED\*\*/$1 \x02\x0303✅ RESOLVED\x0f/;
-        $msg =~ s/^((?:\[(?:@@)?\w+\] )?\w{7}) \*\*🚨 TRIGGERED\*\*/$1 \x02\x0304🚨 TRIGGERED\x0f/;
+        if ($msg =~ s/^((?:\[(?:@@)?\w+\] )?(\w{7})) \*\*🚨 TRIGGERED\*\*/$1 \x02\x0304🚨 TRIGGERED\x0f/) {
+            $pd_id = $2;
+        }
         $msg =~ s/^((?:\[(?:@@)?\w+\] )?\w{7}) \*\*‼️ UNACKNOWLEDGED\*\*/$1 \x02\x0304‼️  UNACKNOWLEDGED\x0f/;
+
+        if ($pd_id) {
+            unshift(@PD_CACHE, $2);
+            if (scalar(@PD_CACHE) > 20) {
+                pop(@PD_CACHE);
+            }
+        }
     }
 
     # webbot noise
@@ -48,4 +75,89 @@ signal_add_last 'message public' => sub {
     }
 
     Irssi::signal_continue($server, $msg, $nick, $address, $target);
+};
+
+my $PD_CACHE_SEARCH_ENABLED = 0;
+my $PD_CACHE_INDEX = 0;
+my $PD_ADDED = 0;
+command_bind 'pagerduty_cache_search' => sub {
+    my ($data, $server, $wi) = @_;
+
+    return unless ref $wi and ($wi->{type} eq 'CHANNEL' and $wi->{name} eq '#is-pagerduty');
+
+    my %chatnets = map { $_ => 1 } split(/\s+/, settings_get_str('matterircd_complete_networks'));
+    return unless exists $chatnets{'*'} || exists $chatnets{$server->{chatnet}};
+
+    $PD_CACHE_SEARCH_ENABLED = 1;
+    my $pd_id = $PD_CACHE[$PD_CACHE_INDEX];
+    $PD_CACHE_INDEX += 1;
+    if ($PD_CACHE_INDEX > $#PD_CACHE) {
+        # Cycle back to the start.
+        $PD_CACHE_INDEX = 0;
+    }
+
+    if ($pd_id) {
+        # Save input text.
+        my $input = parse_special('$L');
+        # Remove previously inserted PagerDuty incident.
+        $input =~ s/P\w{6}$//;
+
+        # Insert PagerDuty incident from cache.
+        gui_input_set_pos(0);
+        gui_input_set($input . $pd_id);
+
+        $PD_ADDED = 1;
+    }
+};
+
+my $KEY_CTRL_C = 3;
+my $KEY_ESC    = 27;
+my $KEY_RET    = 13;
+my $KEY_SPC    = 32;
+
+signal_add_last 'gui key pressed' => sub {
+    my ($key) = @_;
+
+    return unless $PD_CACHE_SEARCH_ENABLED;
+
+    my $server = Irssi::active_server();
+    my %chatnets = map { $_ => 1 } split(/\s+/, settings_get_str('matterircd_complete_networks'));
+    return unless exists $chatnets{'*'} || exists $chatnets{$server->{chatnet}};
+
+    if ($key == $KEY_RET) {
+        $PD_ADDED = 0;
+        @PD_CACHE = ();
+        $PD_CACHE_INDEX = 0;
+        $PD_CACHE_SEARCH_ENABLED = 0;
+    }
+
+    # Cancel/abort.
+    elsif ($key == $KEY_CTRL_C) {
+        my $input = parse_special('$L');
+
+        # Remove the Ctrl+C character.
+        $input =~ tr///d;
+
+        if ($PD_ADDED) {
+            my $pos = gui_input_get_pos();
+            if ($input =~ s/P\w{6}$//) {
+                $pos -= 7;
+            }
+
+            # We also want to move the input position back one for
+            # Ctrl+C char.
+            $pos = $pos > 0 ? $pos - 1 : 0;
+
+            # Replace the text in the input box with our modified
+            # version, then move cursor positon to where it was
+            # without the inserted PagerDuty incident.
+            gui_input_set($input);
+            gui_input_set_pos($pos);
+        }
+
+        $PD_ADDED = 0;
+        @PD_CACHE = ();
+        $PD_CACHE_INDEX = 0;
+        $PD_CACHE_SEARCH_ENABLED = 0;
+    }
 };
