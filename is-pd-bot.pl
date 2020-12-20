@@ -2,13 +2,13 @@ use strict;
 use warnings;
 use experimental 'smartmatch';
 
-use Irssi qw(command_bind settings_add_str settings_get_str signal_add_last);
+use Irssi qw(command_bind settings_add_int settings_get_int settings_add_str settings_get_str signal_add_last);
 
 
 our $VERSION = '1.00';
 our %IRSSI = (
     name        => 'is-pd-bot',
-    description => 'Colours from mattermost is-pd-bot',
+    description => 'Colours from Mattermost is-pd-bot and things',
     authors     => 'Haw Loeung',
     contact     => 'hloeung/Freenode',
     license     => 'GPL',
@@ -17,6 +17,7 @@ our %IRSSI = (
 settings_add_str('matterircd_complete', 'matterircd_complete_networks', '');
 
 my @PD_CACHE;
+settings_add_int('is_pd_bot', 'pagerduty_cache_size', 20);
 command_bind 'pagerduty_cache_dump' => sub {
     my ($data, $server, $wi) = @_;
 
@@ -52,7 +53,7 @@ signal_add_last 'message public' => sub {
 
         if ($pd_id) {
             unshift(@PD_CACHE, $2);
-            if (scalar(@PD_CACHE) > 20) {
+            if (scalar(@PD_CACHE) > settings_get_int('pagerduty_cache_size')) {
                 pop(@PD_CACHE);
             }
         }
