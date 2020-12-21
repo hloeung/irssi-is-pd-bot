@@ -2,7 +2,18 @@ use strict;
 use warnings;
 use experimental 'smartmatch';
 
-use Irssi qw(command_bind gui_input_get_pos gui_input_set_pos gui_input_set parse_special settings_add_int settings_get_int settings_add_str settings_get_str signal_add_last);
+use Irssi qw(
+    command_bind
+    gui_input_get_pos
+    gui_input_set_pos
+    gui_input_set
+    parse_special
+    settings_add_int
+    settings_add_str
+    settings_get_int
+    settings_get_str
+    signal_add_last
+);
 
 
 our $VERSION = '1.00';
