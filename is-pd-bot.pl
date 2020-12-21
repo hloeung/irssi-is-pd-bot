@@ -127,7 +127,6 @@ signal_add_last 'gui key pressed' => sub {
 
     if ($key == $KEY_RET) {
         $PD_ADDED = 0;
-        @PD_CACHE = ();
         $PD_CACHE_INDEX = 0;
         $PD_CACHE_SEARCH_ENABLED = 0;
     }
@@ -157,7 +156,6 @@ signal_add_last 'gui key pressed' => sub {
         }
 
         $PD_ADDED = 0;
-        @PD_CACHE = ();
         $PD_CACHE_INDEX = 0;
         $PD_CACHE_SEARCH_ENABLED = 0;
     }
