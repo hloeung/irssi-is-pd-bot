@@ -89,9 +89,9 @@ signal_add_last 'message public' => sub {
 
     elsif (($target eq '#is-outage') && ($nick eq 'is-pd-bot')) {
         $msg =~ s/^✅ Incident/\x02\x0303✅\x0f Incident/;
-        $msg =~ s/now resolved\.( \[(?:@@)?\w+\]\s*)?$/\x02\x0303now resolved\x0f.$1/;
+        $msg =~ s/now resolved\./\x02\x0303now resolved\x0f./;
         $msg =~ s/^🚨 Incident/\x02\x0307🚨\x0f Incident/;
-        $msg =~ s/taking a look\.( \[(?:@@)?\w+\]\s*)?$/\x02\x0307taking a look\x0f.$1/;
+        $msg =~ s/taking a look\./\x02\x0307taking a look\x0f./;
     }
 
     else {
