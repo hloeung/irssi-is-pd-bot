@@ -60,7 +60,9 @@ signal_add_last 'message public' => sub {
             my $resolved_id = $2;
             # Clean up resolved PagerDuty incident from cache.
             for my $i (0 .. $#PD_CACHE) {
-                splice(@PD_CACHE, $i, 1);
+                if ($PD_CACHE[$i] && ($PD_CACHE[$i] eq $resolved_id)) {
+                    splice(@PD_CACHE, $i, 1);
+                }
             }
         }
         if ($msg =~ s/^((?:\[(?:@@)?\w+\] )?(P\w{6})) \*\*🚨 TRIGGERED\*\*/$1 \x02\x0304🚨 TRIGGERED\x0f/) {
