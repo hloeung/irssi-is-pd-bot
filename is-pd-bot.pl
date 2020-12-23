@@ -51,12 +51,16 @@ signal_add_last 'message public' => sub {
 
     if (($target eq '#is-pagerduty') && ($nick eq 'is-pd-bot')) {
         my $pd_id;
-        $msg =~ s/^((?:\[(?:@@)?\w+\] )?P\w{6}) \*\*🆗 ACKNOWLEDGED\*\*/$1 \x02\x0307🆗 ACKNOWLEDGED\x0f/;
-        $msg =~ s/^((?:\[(?:@@)?\w+\] )?P\w{6}) \*\*📥 ASSIGNED\*\*/$1 \x02\x0308📥 ASSIGNED\x0f/;
-        if ($msg =~ s/^((?:\[(?:@@)?\w+\] )?(P\w{6})) \*\*📤 ESCALATED\*\*/$1 \x02\x0306📤 ESCALATED\x0f/) {
+
+        if ($msg =~ s/^((?:\[(?:@@)?\w+\] )?P\w{6}) \*\*🆗 ACKNOWLEDGED\*\*/$1 \x02\x0307🆗 ACKNOWLEDGED\x0f/) {
+            $pd_id = '';
+        }
+
+        elsif ($msg =~ s/^((?:\[(?:@@)?\w+\] )?(P\w{6})) \*\*🚨 TRIGGERED\*\*/$1 \x02\x0304🚨 TRIGGERED\x0f/) {
             $pd_id = $2;
         }
-        if ($msg =~ s/^((?:\[(?:@@)?\w+\] )?(P\w{6})) \*\*✅ RESOLVED\*\*/$1 \x02\x0303✅ RESOLVED\x0f/) {
+
+        elsif ($msg =~ s/^((?:\[(?:@@)?\w+\] )?(P\w{6})) \*\*✅ RESOLVED\*\*/$1 \x02\x0303✅ RESOLVED\x0f/) {
             my $resolved_id = $2;
             # Clean up resolved PagerDuty incident from cache.
             for my $i (0 .. $#PD_CACHE) {
@@ -64,11 +68,20 @@ signal_add_last 'message public' => sub {
                     splice(@PD_CACHE, $i, 1);
                 }
             }
+            $pd_id = '';
         }
-        if ($msg =~ s/^((?:\[(?:@@)?\w+\] )?(P\w{6})) \*\*🚨 TRIGGERED\*\*/$1 \x02\x0304🚨 TRIGGERED\x0f/) {
+
+        elsif ($msg =~ s/^((?:\[(?:@@)?\w+\] )?P\w{6}) \*\*‼️ UNACKNOWLEDGED\*\*/$1 \x02\x0304‼️  UNACKNOWLEDGED\x0f/) {
             $pd_id = $2;
         }
-        $msg =~ s/^((?:\[(?:@@)?\w+\] )?P\w{6}) \*\*‼️ UNACKNOWLEDGED\*\*/$1 \x02\x0304‼️  UNACKNOWLEDGED\x0f/;
+
+        elsif ($msg =~ s/^((?:\[(?:@@)?\w+\] )?(P\w{6})) \*\*📤 ESCALATED\*\*/$1 \x02\x0306📤 ESCALATED\x0f/) {
+            $pd_id = $2;
+        }
+
+        elsif ($msg =~ s/^((?:\[(?:@@)?\w+\] )?P\w{6}) \*\*📥 ASSIGNED\*\*/$1 \x02\x0308📥 ASSIGNED\x0f/) {
+            $pd_id = '';
+        }
 
         if ($pd_id) {
             # Store most recently seen PagerDuty incidents at the
