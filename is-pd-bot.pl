@@ -52,8 +52,8 @@ signal_add_last 'message public' => sub {
     if (($target eq '#is-pagerduty') && ($nick eq 'is-pd-bot')) {
         my $pd_id;
 
-        if ($msg =~ s/^((?:\[(?:@@)?\w+\] )?P\w{6}) \*\*🆗 ACKNOWLEDGED\*\*/$1 \x02\x0307🆗 ACKNOWLEDGED\x0f/) {
-            $pd_id = '';
+        if ($msg =~ s/^((?:\[(?:@@)?\w+\] )?(P\w{6})) \*\*🆗 ACKNOWLEDGED\*\*/$1 \x02\x0307🆗 ACKNOWLEDGED\x0f/) {
+            $pd_id = $2;
         }
 
         elsif ($msg =~ s/^((?:\[(?:@@)?\w+\] )?(P\w{6})) \*\*🚨 TRIGGERED\*\*/$1 \x02\x0304🚨 TRIGGERED\x0f/) {
@@ -71,7 +71,7 @@ signal_add_last 'message public' => sub {
             $pd_id = '';
         }
 
-        elsif ($msg =~ s/^((?:\[(?:@@)?\w+\] )?P\w{6}) \*\*‼️ UNACKNOWLEDGED\*\*/$1 \x02\x0304‼️  UNACKNOWLEDGED\x0f/) {
+        elsif ($msg =~ s/^((?:\[(?:@@)?\w+\] )?(P\w{6})) \*\*‼️ UNACKNOWLEDGED\*\*/$1 \x02\x0304‼️  UNACKNOWLEDGED\x0f/) {
             $pd_id = $2;
         }
 
@@ -79,11 +79,17 @@ signal_add_last 'message public' => sub {
             $pd_id = $2;
         }
 
-        elsif ($msg =~ s/^((?:\[(?:@@)?\w+\] )?P\w{6}) \*\*📥 ASSIGNED\*\*/$1 \x02\x0308📥 ASSIGNED\x0f/) {
-            $pd_id = '';
+        elsif ($msg =~ s/^((?:\[(?:@@)?\w+\] )?(P\w{6})) \*\*📥 ASSIGNED\*\*/$1 \x02\x0308📥 ASSIGNED\x0f/) {
+            $pd_id = $2;
         }
 
         if ($pd_id) {
+            # Make sure it doesn't already exist in the cache.
+            for my $i (0 .. $#PD_CACHE) {
+                if ($PD_CACHE[$i] && ($PD_CACHE[$i] eq $pd_id)) {
+                    splice(@PD_CACHE, $i, 1);
+                }
+            }
             # Store most recently seen PagerDuty incidents at the
             # start.
             unshift(@PD_CACHE, $2);
