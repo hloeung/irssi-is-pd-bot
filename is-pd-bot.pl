@@ -15,6 +15,8 @@ use Irssi qw(
     signal_add_last
 );
 
+# Enable for debugging purposes only.
+# use Data::Dumper;
 
 our $VERSION = '1.00';
 our %IRSSI = (
@@ -27,6 +29,8 @@ our %IRSSI = (
 
 settings_add_str('matterircd_complete', 'matterircd_complete_networks', '');
 
+my $pd_url = 'https://canonical.pagerduty.com/incidents/';
+
 my @PD_CACHE;
 settings_add_int('is_pd_bot', 'pagerduty_cache_size', 20);
 command_bind 'pagerduty_cache_dump' => sub {
@@ -36,10 +40,10 @@ command_bind 'pagerduty_cache_dump' => sub {
     return unless exists $chatnets{'*'} || exists $chatnets{$server->{chatnet}};
 
     if (scalar(@PD_CACHE) == 0) {
-        Irssi::print('Empty PagerDuty incidents cache');
+        Irssi::print('Empty PagerDuty incidents in cache, see ' . $pd_url);
     }
     foreach my $pd_id (@PD_CACHE) {
-        Irssi::print($pd_id);
+        Irssi::print($pd_id . ' - ' . $pd_url . $pd_id);
     }
 };
 
