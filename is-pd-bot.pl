@@ -28,6 +28,11 @@ our %IRSSI = (
 );
 
 settings_add_str('matterircd_complete', 'matterircd_complete_networks', '');
+settings_add_str('is_pd_bot', 'is_pd_bot_nick', 'is-pd-bot');
+settings_add_str('is_pd_bot', 'is_pd_bot_pagerduty_channel', 'is-pagerduty');
+settings_add_str('is_pd_bot', 'is_pd_bot_outage_channel', 'is-outage');
+# Noisy bots sharing the same outage/pagerduty channels.
+settings_add_str('is_pd_bot', 'is_pd_bot_noisy_bots', 'webbot');
 
 my $pd_url = 'https://canonical.pagerduty.com/incidents/';
 
@@ -53,7 +58,14 @@ signal_add_last 'message public' => sub {
     my %chatnets = map { $_ => 1 } split(/\s+/, settings_get_str('matterircd_complete_networks'));
     return unless exists $chatnets{'*'} || exists $chatnets{$server->{chatnet}};
 
-    if (($target eq '#is-pagerduty') && ($nick eq 'is-pd-bot')) {
+    my $pagerduty_channel = '#' . settings_get_str('is_pd_bot_pagerduty_channel');
+    my $outage_channel = '#' . settings_get_str('is_pd_bot_outage_channel');
+    return unless ($target ne $pagerduty_channel) || ($target ne $outage_channel);
+
+    my $bot_nick = settings_get_str('is_pd_bot_nick');
+    my @noisy_bots = split(/\s+/, settings_get_str('is_pd_bot_noisy_bots'));
+
+    if (($target eq $pagerduty_channel) && ($nick eq $bot_nick)) {
         my $pd_id;
 
         if ($msg =~ s/^((?:\[(?:@@)?\w+\] )?(P\w{6})) \*\*🆗 ACKNOWLEDGED\*\*/$1 \x02\x0307🆗 ACKNOWLEDGED\x0f/) {
@@ -105,16 +117,15 @@ signal_add_last 'message public' => sub {
         }
     }
 
-    # webbot noise
-    elsif ($nick eq 'webbot') {
-        $msg =~ s/^\[/\x0314[/;
-    }
-
-    elsif (($target eq '#is-outage') && ($nick eq 'is-pd-bot')) {
+    elsif (($target eq $outage_channel) && ($nick eq $bot_nick)) {
         $msg =~ s/^✅ Incident/\x02\x0303✅\x0f Incident/;
         $msg =~ s/now resolved\./\x02\x0303now resolved\x0f./;
         $msg =~ s/^🚨 Incident/\x02\x0307🚨\x0f Incident/;
         $msg =~ s/taking a look\./\x02\x0307taking a look\x0f./;
+    }
+
+    elsif ($nick ~~ @noisy_bots) {
+        $msg =~ s/^\[/\x0314[/;
     }
 
     else {
@@ -130,7 +141,8 @@ my $PD_ADDED = 0;
 command_bind 'pagerduty_cache_search' => sub {
     my ($data, $server, $wi) = @_;
 
-    return unless ref $wi and ($wi->{type} eq 'CHANNEL' and $wi->{name} eq '#is-pagerduty');
+    my $pagerduty_channel = '#' . settings_get_str('is_pd_bot_pagerduty_channel');
+    return unless ref $wi and ($wi->{type} eq 'CHANNEL' and $wi->{name} eq $pagerduty_channel);
 
     my %chatnets = map { $_ => 1 } split(/\s+/, settings_get_str('matterircd_complete_networks'));
     return unless exists $chatnets{'*'} || exists $chatnets{$server->{chatnet}};
