@@ -2,6 +2,7 @@ use strict;
 use warnings;
 use experimental 'smartmatch';
 
+use Irssi::TextUI;
 use Irssi qw(
     command_bind
     gui_input_get_pos
@@ -68,15 +69,15 @@ signal_add_last 'message public' => sub {
     if (($target eq $pagerduty_channel) && ($nick eq $bot_nick)) {
         my $pd_id;
 
-        if ($msg =~ s/^((?:\[(?:@@)?\w+\] )?(P\w{6})) \*\*🆗 ACKNOWLEDGED\*\*/$1 \x02\x0307🆗 ACKNOWLEDGED\x0f/) {
+        if ($msg =~ s/^(?:\[\d{2}:\d{2}\] )?((?:\[(?:@@)?\w+\] )?(P\w{6})) \*\*🆗 ACKNOWLEDGED\*\*/$1 \x02\x0307🆗 ACKNOWLEDGED\x0f/) {
             $pd_id = $2;
         }
 
-        elsif ($msg =~ s/^((?:\[(?:@@)?\w+\] )?(P\w{6})) \*\*🚨 TRIGGERED\*\*/$1 \x02\x0304🚨 TRIGGERED\x0f/) {
+        elsif ($msg =~ s/^(?:\[\d{2}:\d{2}\] )?((?:\[(?:@@)?\w+\] )?(P\w{6})) \*\*🚨 TRIGGERED\*\*/$1 \x02\x0304🚨 TRIGGERED\x0f/) {
             $pd_id = $2;
         }
 
-        elsif ($msg =~ s/^((?:\[(?:@@)?\w+\] )?(P\w{6})) \*\*✅ RESOLVED\*\*/$1 \x02\x0303✅ RESOLVED\x0f/) {
+        elsif ($msg =~ s/^(?:\[\d{2}:\d{2}\] )?((?:\[(?:@@)?\w+\] )?(P\w{6})) \*\*✅ RESOLVED\*\*/$1 \x02\x0303✅ RESOLVED\x0f/) {
             my $resolved_id = $2;
             # Clean up resolved PagerDuty incident from cache.
             for my $i (0 .. $#PD_CACHE) {
@@ -87,15 +88,15 @@ signal_add_last 'message public' => sub {
             $pd_id = '';
         }
 
-        elsif ($msg =~ s/^((?:\[(?:@@)?\w+\] )?(P\w{6})) \*\*‼️ UNACKNOWLEDGED\*\*/$1 \x02\x0304‼️  UNACKNOWLEDGED\x0f/) {
+        elsif ($msg =~ s/^(?:\[\d{2}:\d{2}\] )?((?:\[(?:@@)?\w+\] )?(P\w{6})) \*\*‼️ UNACKNOWLEDGED\*\*/$1 \x02\x0304‼️  UNACKNOWLEDGED\x0f/) {
             $pd_id = $2;
         }
 
-        elsif ($msg =~ s/^((?:\[(?:@@)?\w+\] )?(P\w{6})) \*\*📤 ESCALATED\*\*/$1 \x02\x0306📤 ESCALATED\x0f/) {
+        elsif ($msg =~ s/^(?:\[\d{2}:\d{2}\] )?((?:\[(?:@@)?\w+\] )?(P\w{6})) \*\*📤 ESCALATED\*\*/$1 \x02\x0306📤 ESCALATED\x0f/) {
             $pd_id = $2;
         }
 
-        elsif ($msg =~ s/^((?:\[(?:@@)?\w+\] )?(P\w{6})) \*\*📥 ASSIGNED\*\*/$1 \x02\x0308📥 ASSIGNED\x0f/) {
+        elsif ($msg =~ s/^(?:\[\d{2}:\d{2}\] )?((?:\[(?:@@)?\w+\] )?(P\w{6})) \*\*📥 ASSIGNED\*\*/$1 \x02\x0308📥 ASSIGNED\x0f/) {
             $pd_id = $2;
         }
 
@@ -118,6 +119,8 @@ signal_add_last 'message public' => sub {
     }
 
     elsif ($target eq $outage_channel) {
+        # We can't match on begin with (^) so threaded replies are
+        # also colourised.
         $msg =~ s/🚨 Incident/\x02\x0307🚨\x0f Incident/;
         $msg =~ s/✅ Incident/\x02\x0303✅\x0f Incident/;
         if ($nick eq $bot_nick) {
