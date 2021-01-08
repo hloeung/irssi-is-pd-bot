@@ -53,6 +53,8 @@ command_bind 'pagerduty_cache_dump' => sub {
     }
 };
 
+my $PD_CACHE_INDEX = 0;
+
 signal_add_last 'message public' => sub {
     my($server, $msg, $nick, $address, $target) = @_;
 
@@ -101,6 +103,11 @@ signal_add_last 'message public' => sub {
         }
 
         if ($pd_id) {
+            # Reset search index on changes.
+            if ($PD_CACHE[0] && ($PD_CACHE[0] ne $pd_id)) {
+                $PD_CACHE_INDEX = 0;
+            }
+
             # Make sure it doesn't already exist in the cache.
             for my $i (0 .. $#PD_CACHE) {
                 if ($PD_CACHE[$i] && ($PD_CACHE[$i] eq $pd_id)) {
@@ -141,7 +148,6 @@ signal_add_last 'message public' => sub {
 };
 
 my $PD_CACHE_SEARCH_ENABLED = 0;
-my $PD_CACHE_INDEX = 0;
 my $PD_ADDED = 0;
 command_bind 'pagerduty_cache_search' => sub {
     my ($data, $server, $wi) = @_;
