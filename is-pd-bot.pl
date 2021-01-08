@@ -175,6 +175,7 @@ command_bind 'pagerduty_cache_search' => sub {
 };
 
 my $KEY_CTRL_C = 3;
+my $KEY_CTRL_U = 21;
 my $KEY_ESC    = 27;
 my $KEY_RET    = 13;
 my $KEY_SPC    = 32;
@@ -188,7 +189,7 @@ signal_add_last 'gui key pressed' => sub {
     my %chatnets = map { $_ => 1 } split(/\s+/, settings_get_str('matterircd_complete_networks'));
     return unless exists $chatnets{'*'} || exists $chatnets{$server->{chatnet}};
 
-    if ($key == $KEY_RET) {
+    if (($key == $KEY_RET) || ($key == $KEY_CTRL_U)) {
         $PD_ADDED = 0;
         $PD_CACHE_INDEX = 0;
         $PD_CACHE_SEARCH_ENABLED = 0;
