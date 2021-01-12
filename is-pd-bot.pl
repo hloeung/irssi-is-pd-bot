@@ -32,7 +32,7 @@ settings_add_str('matterircd_complete', 'matterircd_complete_networks', '');
 settings_add_str('is_pd_bot', 'is_pd_bot_nick', 'is-pd-bot');
 settings_add_str('is_pd_bot', 'is_pd_bot_pagerduty_channel', 'is-pagerduty');
 settings_add_str('is_pd_bot', 'is_pd_bot_outage_channel', 'is-outage');
-# Noisy bots sharing the same outage/pagerduty channels.
+# Noisy bots sharing the same outage channel.
 settings_add_str('is_pd_bot', 'is_pd_bot_noisy_bots', 'webbot');
 
 my $pd_url = 'https://canonical.pagerduty.com/incidents/';
@@ -134,10 +134,10 @@ signal_add_last 'message public' => sub {
             $msg =~ s/taking a look\./\x02\x0307taking a look\x0f./;
             $msg =~ s/now resolved\./\x02\x0303now resolved\x0f./;
         }
-    }
 
-    elsif ($nick ~~ @noisy_bots) {
-        $msg =~ s/^\[/\x0314[/;
+        elsif ($nick ~~ @noisy_bots) {
+            $msg =~ s/^\[/\x0314[/;
+        }
     }
 
     else {
