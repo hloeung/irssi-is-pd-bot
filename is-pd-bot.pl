@@ -102,6 +102,13 @@ signal_add_last 'message public' => sub {
             $pd_id = $1;
         }
 
+        else {
+            # '**P3WQTNO** **PB5U6D4** **P3F46SI**' becomes 'P3WQTNO PB5U6D4 P3F46SI'
+            # so we can easily just copy the entire list of
+            # outstanding incidents and ack.
+            $msg =~ s/\*\*(P\w{6})\*\*/$1/g;
+        }
+
         if ($pd_id) {
             # Reset search index on changes.
             if ($PD_CACHE[0] && ($PD_CACHE[0] ne $pd_id)) {
