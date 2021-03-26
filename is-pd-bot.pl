@@ -71,16 +71,16 @@ signal_add_last 'message public' => sub {
     if (($target eq $pagerduty_channel) && ($nick eq $bot_nick)) {
         my $pd_id;
 
-        if ($msg =~ s/^(?:\[\d{2}:\d{2}\] )?((?:\[(?:@@)?\w+\] )?(P\w{6})) \*\*🆗 ACKNOWLEDGED\*\*/$1 \x02\x0307🆗 ACKNOWLEDGED\x0f/) {
-            $pd_id = $2;
+        if ($msg =~ s/(P\w{6}) \*\*🆗 ACKNOWLEDGED\*\*/\x02$1 \x0307🆗 ACKNOWLEDGED\x0f/) {
+            $pd_id = $1;
         }
 
-        elsif ($msg =~ s/^(?:\[\d{2}:\d{2}\] )?((?:\[(?:@@)?\w+\] )?(P\w{6})) \*\*🚨 TRIGGERED\*\*/$1 \x02\x0304🚨 TRIGGERED\x0f/) {
-            $pd_id = $2;
+        elsif ($msg =~ s/(P\w{6}) \*\*🚨 TRIGGERED\*\*/\x02$1 \x0304🚨 TRIGGERED\x0f/) {
+            $pd_id = $1;
         }
 
-        elsif ($msg =~ s/^(?:\[\d{2}:\d{2}\] )?((?:\[(?:@@)?\w+\] )?(P\w{6})) \*\*✅ RESOLVED\*\*/$1 \x02\x0303✅ RESOLVED\x0f/) {
-            my $resolved_id = $2;
+        elsif ($msg =~ s/(P\w{6}) \*\*✅ RESOLVED\*\*/\x02$1 \x0303✅ RESOLVED\x0f/) {
+            my $resolved_id = $1;
             # Clean up resolved PagerDuty incident from cache.
             for my $i (0 .. $#PD_CACHE) {
                 if ($PD_CACHE[$i] && ($PD_CACHE[$i] eq $resolved_id)) {
@@ -90,16 +90,16 @@ signal_add_last 'message public' => sub {
             $pd_id = '';
         }
 
-        elsif ($msg =~ s/^(?:\[\d{2}:\d{2}\] )?((?:\[(?:@@)?\w+\] )?(P\w{6})) \*\*‼️ UNACKNOWLEDGED\*\*/$1 \x02\x0304‼️  UNACKNOWLEDGED\x0f/) {
-            $pd_id = $2;
+        elsif ($msg =~ s/(P\w{6}) \*\*‼️ UNACKNOWLEDGED\*\*/\x02$1 \x0304‼️  UNACKNOWLEDGED\x0f/) {
+            $pd_id = $1;
         }
 
-        elsif ($msg =~ s/^(?:\[\d{2}:\d{2}\] )?((?:\[(?:@@)?\w+\] )?(P\w{6})) \*\*📤 ESCALATED\*\*/$1 \x02\x0306📤 ESCALATED\x0f/) {
-            $pd_id = $2;
+        elsif ($msg =~ s/(P\w{6}) \*\*📤 ESCALATED\*\*/\x02$1 \x0306📤 ESCALATED\x0f/) {
+            $pd_id = $1;
         }
 
-        elsif ($msg =~ s/^(?:\[\d{2}:\d{2}\] )?((?:\[(?:@@)?\w+\] )?(P\w{6})) \*\*📥 ASSIGNED\*\*/$1 \x02\x0308📥 ASSIGNED\x0f/) {
-            $pd_id = $2;
+        elsif ($msg =~ s/(P\w{6}) \*\*📥 ASSIGNED\*\*/\x02$1 \x0308📥 ASSIGNED\x0f/) {
+            $pd_id = $1;
         }
 
         if ($pd_id) {
@@ -116,7 +116,7 @@ signal_add_last 'message public' => sub {
             }
             # Store most recently seen PagerDuty incidents at the
             # start.
-            unshift(@PD_CACHE, $2);
+            unshift(@PD_CACHE, $pd_id);
             # Remove last seen PagerDuty incidents if reached
             # max. cache size.
             if (scalar(@PD_CACHE) > settings_get_int('pagerduty_cache_size')) {
