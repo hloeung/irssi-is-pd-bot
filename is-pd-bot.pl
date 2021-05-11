@@ -90,7 +90,7 @@ signal_add_last 'message public' => sub {
             $pd_id = '';
         }
 
-        elsif ($msg =~ s/(P\w{6}) \*\*‼️ UNACKNOWLEDGED\*\*/$1 \x02\x0304‼️  UNACKNOWLEDGED\x0f/) {
+        elsif ($msg =~ s/(P\w{6}) \*\*‼️ UNACKNOWLEDGED\*\*/\x02$1 \x0304‼️  UNACKNOWLEDGED\x0f/) {
             $pd_id = $1;
         }
 
