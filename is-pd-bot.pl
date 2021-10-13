@@ -71,15 +71,15 @@ signal_add_last 'message public' => sub {
     if (($target eq $pagerduty_channel) && ($nick eq $bot_nick)) {
         my $pd_id;
 
-        if ($msg =~ s/(P\w{6}) \*\*🆗 ACKNOWLEDGED\*\*/$1 \x02\x0307🆗 ACKNOWLEDGED\x0f/) {
+        if ($msg =~ s/(P\w{6}|Q\w{13}) \*\*🆗 ACKNOWLEDGED\*\*/$1 \x02\x0307🆗 ACKNOWLEDGED\x0f/) {
             $pd_id = $1;
         }
 
-        elsif ($msg =~ s/(P\w{6}) \*\*🚨 TRIGGERED\*\*/\x02$1 \x0304🚨 TRIGGERED\x0f/) {
+        elsif ($msg =~ s/(P\w{6}|Q\w{13}) \*\*🚨 TRIGGERED\*\*/\x02$1 \x0304🚨 TRIGGERED\x0f/) {
             $pd_id = $1;
         }
 
-        elsif ($msg =~ s/(P\w{6}) \*\*✅ RESOLVED\*\*/$1 \x02\x0303✅ RESOLVED\x0f/) {
+        elsif ($msg =~ s/(P\w{6}|Q\w{13}) \*\*✅ RESOLVED\*\*/$1 \x02\x0303✅ RESOLVED\x0f/) {
             my $resolved_id = $1;
             # Clean up resolved PagerDuty incident from cache.
             for my $i (0 .. $#PD_CACHE) {
@@ -90,15 +90,15 @@ signal_add_last 'message public' => sub {
             $pd_id = '';
         }
 
-        elsif ($msg =~ s/(P\w{6}) \*\*‼️ UNACKNOWLEDGED\*\*/\x02$1 \x0304‼️  UNACKNOWLEDGED\x0f/) {
+        elsif ($msg =~ s/(P\w{6}|Q\w{13}) \*\*‼️ UNACKNOWLEDGED\*\*/\x02$1 \x0304‼️  UNACKNOWLEDGED\x0f/) {
             $pd_id = $1;
         }
 
-        elsif ($msg =~ s/(P\w{6}) \*\*📤 ESCALATED\*\*/$1 \x02\x0306📤 ESCALATED\x0f/) {
+        elsif ($msg =~ s/(P\w{6}|Q\w{13}) \*\*📤 ESCALATED\*\*/$1 \x02\x0306📤 ESCALATED\x0f/) {
             $pd_id = $1;
         }
 
-        elsif ($msg =~ s/(P\w{6}) \*\*📥 ASSIGNED\*\*/$1 \x02\x0308📥 ASSIGNED\x0f/) {
+        elsif ($msg =~ s/(P\w{6}|Q\w{13}) \*\*📥 ASSIGNED\*\*/$1 \x02\x0308📥 ASSIGNED\x0f/) {
             $pd_id = $1;
         }
 
@@ -106,7 +106,7 @@ signal_add_last 'message public' => sub {
             # '**P3WQTNO** **PB5U6D4** **P3F46SI**' becomes 'P3WQTNO PB5U6D4 P3F46SI'
             # so we can easily just copy the entire list of
             # outstanding incidents and ack.
-            $msg =~ s/\*\*(P\w{6})\*\*/$1/g;
+            $msg =~ s/\*\*(P\w{6}|Q\w{13})\*\*/$1/g;
         }
 
         if ($pd_id) {
@@ -177,7 +177,7 @@ command_bind 'pagerduty_cache_search' => sub {
         # Save input text.
         my $input = parse_special('$L');
         # Remove previously inserted PagerDuty incident.
-        $input =~ s/P\w{6}$//;
+        $input =~ s/(P\w{6}|Q\w{13})$//;
 
         # Insert PagerDuty incident from cache.
         gui_input_set_pos(0);
@@ -217,7 +217,7 @@ signal_add_last 'gui key pressed' => sub {
 
         if ($PD_ADDED) {
             my $pos = gui_input_get_pos();
-            if ($input =~ s/P\w{6}$//) {
+            if ($input =~ s/(P\w{6}|Q\w{13})$//) {
                 $pos -= 7;
             }
 
