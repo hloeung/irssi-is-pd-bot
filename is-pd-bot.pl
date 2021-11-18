@@ -98,7 +98,11 @@ signal_add_last 'message public' => sub {
             $pd_id = $1;
         }
 
-        elsif ($msg =~ s/(P\w{6}|Q\w{13}) \*\*📥 ASSIGNED\*\*/$1 \x02\x0308📥 ASSIGNED\x0f/) {
+        elsif ($msg =~ s/(P\w{6}|Q\w{13}) \*\*📥 REASSIGNED\*\*/$1 \x02\x0308📥 REASSIGNED\x0f/) {
+            $pd_id = $1;
+        }
+
+        elsif ($msg =~ s/(P\w{6}|Q\w{13}) \*\*💤 SNOOZED\*\*/$1 \x02\x0312💤 SNOOZED\x0f/) {
             $pd_id = $1;
         }
 
