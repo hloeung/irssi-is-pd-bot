@@ -2,19 +2,8 @@ use strict;
 use warnings;
 use experimental 'smartmatch';
 
-use Irssi::TextUI;
-use Irssi qw(
-    command_bind
-    gui_input_get_pos
-    gui_input_set_pos
-    gui_input_set
-    parse_special
-    settings_add_int
-    settings_add_str
-    settings_get_int
-    settings_get_str
-    signal_add_last
-);
+require Irssi::TextUI;
+require Irssi;
 
 # Enable for debugging purposes only.
 # use Data::Dumper;
@@ -28,21 +17,21 @@ our %IRSSI = (
     license     => 'GPL',
 );
 
-settings_add_str('matterircd_complete', 'matterircd_complete_networks', '');
-settings_add_str('is_pd_bot', 'is_pd_bot_nick', 'is-pd-bot');
-settings_add_str('is_pd_bot', 'is_pd_bot_pagerduty_channel', 'is-pagerduty');
-settings_add_str('is_pd_bot', 'is_pd_bot_outage_channel', 'is-outage');
+Irssi::settings_add_str('matterircd_complete', 'matterircd_complete_networks', '');
+Irssi::settings_add_str('is_pd_bot', 'is_pd_bot_nick', 'is-pd-bot');
+Irssi::settings_add_str('is_pd_bot', 'is_pd_bot_pagerduty_channel', 'is-pagerduty');
+Irssi::settings_add_str('is_pd_bot', 'is_pd_bot_outage_channel', 'is-outage');
 # Noisy bots sharing the same outage channel.
-settings_add_str('is_pd_bot', 'is_pd_bot_noisy_bots', 'webbot');
+Irssi::settings_add_str('is_pd_bot', 'is_pd_bot_noisy_bots', 'webbot');
 
 my $pd_url = 'https://canonical.pagerduty.com/incidents/';
 
 my @PD_CACHE;
-settings_add_int('is_pd_bot', 'pagerduty_cache_size', 20);
-command_bind 'pagerduty_cache_dump' => sub {
+Irssi::settings_add_int('is_pd_bot', 'pagerduty_cache_size', 20);
+sub cmd_pagerduty_cache_dump {
     my ($data, $server, $wi) = @_;
 
-    my %chatnets = map { $_ => 1 } split(/\s+/, settings_get_str('matterircd_complete_networks'));
+    my %chatnets = map { $_ => 1 } split(/\s+/, Irssi::settings_get_str('matterircd_complete_networks'));
     return unless exists $chatnets{'*'} || exists $chatnets{$server->{chatnet}};
 
     if (scalar(@PD_CACHE) == 0) {
@@ -52,21 +41,22 @@ command_bind 'pagerduty_cache_dump' => sub {
         Irssi::print($pd_id . ' - ' . $pd_url . $pd_id);
     }
 };
+Irssi::command_bind('pagerduty_cache_dump', 'cmd_pagerduty_cache_dump');
 
 my $PD_CACHE_INDEX = 0;
 
-signal_add_last 'message public' => sub {
+sub signal_message_public {
     my($server, $msg, $nick, $address, $target) = @_;
 
-    my %chatnets = map { $_ => 1 } split(/\s+/, settings_get_str('matterircd_complete_networks'));
+    my %chatnets = map { $_ => 1 } split(/\s+/, Irssi::settings_get_str('matterircd_complete_networks'));
     return unless exists $chatnets{'*'} || exists $chatnets{$server->{chatnet}};
 
-    my $pagerduty_channel = '#' . settings_get_str('is_pd_bot_pagerduty_channel');
-    my $outage_channel = '#' . settings_get_str('is_pd_bot_outage_channel');
+    my $pagerduty_channel = '#' . Irssi::settings_get_str('is_pd_bot_pagerduty_channel');
+    my $outage_channel = '#' . Irssi::settings_get_str('is_pd_bot_outage_channel');
     return unless ($target ne $pagerduty_channel) || ($target ne $outage_channel);
 
-    my $bot_nick = settings_get_str('is_pd_bot_nick');
-    my @noisy_bots = split(/\s+/, settings_get_str('is_pd_bot_noisy_bots'));
+    my $bot_nick = Irssi::settings_get_str('is_pd_bot_nick');
+    my @noisy_bots = split(/\s+/, Irssi::settings_get_str('is_pd_bot_noisy_bots'));
 
     if (($target eq $pagerduty_channel) && ($nick eq $bot_nick)) {
         my $pd_id;
@@ -130,7 +120,7 @@ signal_add_last 'message public' => sub {
             unshift(@PD_CACHE, $pd_id);
             # Remove last seen PagerDuty incidents if reached
             # max. cache size.
-            if (scalar(@PD_CACHE) > settings_get_int('pagerduty_cache_size')) {
+            if (scalar(@PD_CACHE) > Irssi::settings_get_int('pagerduty_cache_size')) {
                 pop(@PD_CACHE);
             }
         }
@@ -157,16 +147,17 @@ signal_add_last 'message public' => sub {
 
     Irssi::signal_continue($server, $msg, $nick, $address, $target);
 };
+Irssi::signal_add_last('message public', 'signal_message_public');
 
 my $PD_CACHE_SEARCH_ENABLED = 0;
 my $PD_ADDED = 0;
-command_bind 'pagerduty_cache_search' => sub {
+sub cmd_pagerduty_cache_search {
     my ($data, $server, $wi) = @_;
 
-    my $pagerduty_channel = '#' . settings_get_str('is_pd_bot_pagerduty_channel');
+    my $pagerduty_channel = '#' . Irssi::settings_get_str('is_pd_bot_pagerduty_channel');
     return unless ref $wi and ($wi->{type} eq 'CHANNEL' and $wi->{name} eq $pagerduty_channel);
 
-    my %chatnets = map { $_ => 1 } split(/\s+/, settings_get_str('matterircd_complete_networks'));
+    my %chatnets = map { $_ => 1 } split(/\s+/, Irssi::settings_get_str('matterircd_complete_networks'));
     return unless exists $chatnets{'*'} || exists $chatnets{$server->{chatnet}};
 
     $PD_CACHE_SEARCH_ENABLED = 1;
@@ -190,6 +181,7 @@ command_bind 'pagerduty_cache_search' => sub {
         $PD_ADDED = 1;
     }
 };
+Irssi::command_bind('pagerduty_cache_search', 'cmd_pagerduty_cache_search');
 
 my $KEY_CTRL_C = 3;
 my $KEY_CTRL_U = 21;
@@ -197,13 +189,13 @@ my $KEY_ESC    = 27;
 my $KEY_RET    = 13;
 my $KEY_SPC    = 32;
 
-signal_add_last 'gui key pressed' => sub {
+sub signal_gui_key_pressed {
     my ($key) = @_;
 
     return unless $PD_CACHE_SEARCH_ENABLED;
 
     my $server = Irssi::active_server();
-    my %chatnets = map { $_ => 1 } split(/\s+/, settings_get_str('matterircd_complete_networks'));
+    my %chatnets = map { $_ => 1 } split(/\s+/, Irssi::settings_get_str('matterircd_complete_networks'));
     return unless exists $chatnets{'*'} || exists $chatnets{$server->{chatnet}};
 
     if (($key == $KEY_RET) || ($key == $KEY_CTRL_U)) {
@@ -241,3 +233,4 @@ signal_add_last 'gui key pressed' => sub {
         $PD_CACHE_SEARCH_ENABLED = 0;
     }
 };
+Irssi::signal_add_last('gui key pressed', 'signal_gui_key_pressed');
