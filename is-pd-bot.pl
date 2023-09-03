@@ -100,7 +100,8 @@ sub signal_message_public {
             # '**P3WQTNO** **PB5U6D4** **P3F46SI**' becomes 'P3WQTNO PB5U6D4 P3F46SI'
             # so we can easily just copy the entire list of
             # outstanding incidents and ack.
-            $msg =~ s/\*\*(P\w{6}|Q\w{13})\*\*/$1/g;
+            $msg =~ s/\*\*\*(P\w{6}|Q\w{13})\*\*\*/\x02\x0304$1\x0f/g;
+            $msg =~ s/\*\*(P\w{6}|Q\w{13})\*\*/\x02\x0307$1\x0f/g;
         }
 
         if ($pd_id) {
