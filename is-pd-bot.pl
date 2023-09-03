@@ -65,6 +65,10 @@ sub signal_message_public {
             $pd_id = $1;
         }
 
+        elsif ($msg =~ s/(P\w{6}|Q\w{13}) \*\*\*🚨 TRIGGERED\*\*\*/\x02$1 \x0304🚨 TRIGGERED\x0f/) {
+            $pd_id = $1;
+        }
+        # Backwards compatibility
         elsif ($msg =~ s/(P\w{6}|Q\w{13}) \*\*🚨 TRIGGERED\*\*/\x02$1 \x0304🚨 TRIGGERED\x0f/) {
             $pd_id = $1;
         }
