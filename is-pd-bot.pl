@@ -61,19 +61,19 @@ sub signal_message_public {
     if (($target eq $pagerduty_channel) && ($nick eq $bot_nick)) {
         my $pd_id;
 
-        if ($msg =~ s/(P\w{6}|Q\w{13}) \*\*🆗 ACKNOWLEDGED\*\*/$1 \x02\x0307🆗 ACKNOWLEDGED\x0f/) {
+        if ($msg =~ s/(P\w{6}|Q\w{13}) (\*\*|\x02)🆗 ACKNOWLEDGED(\*\*|\x02)/$1 \x02\x0307🆗 ACKNOWLEDGED\x0f/) {
             $pd_id = $1;
         }
 
-        elsif ($msg =~ s/(P\w{6}|Q\w{13}) \*\*\*🚨 TRIGGERED\*\*\*/\x02$1 \x0304🚨 TRIGGERED\x0f/) {
+        elsif ($msg =~ s/(P\w{6}|Q\w{13}) (\*\*\*|\x1d)🚨 TRIGGERED(\*\*\*|\x1d)/\x02$1 \x0304🚨 TRIGGERED\x0f/) {
             $pd_id = $1;
         }
         # Backwards compatibility
-        elsif ($msg =~ s/(P\w{6}|Q\w{13}) \*\*🚨 TRIGGERED\*\*/\x02$1 \x0304🚨 TRIGGERED\x0f/) {
+        elsif ($msg =~ s/(P\w{6}|Q\w{13}) (\*\*|\x02)🚨 TRIGGERED(\*\*|\x02)/\x02$1 \x0304🚨 TRIGGERED\x0f/) {
             $pd_id = $1;
         }
 
-        elsif ($msg =~ s/(P\w{6}|Q\w{13}) \*\*✅ RESOLVED\*\*/$1 \x02\x0303✅ RESOLVED\x0f/) {
+        elsif ($msg =~ s/(P\w{6}|Q\w{13}) (\*\*|\x02)✅ RESOLVED(\*\*|\x02)/$1 \x02\x0303✅ RESOLVED\x0f/) {
             my $resolved_id = $1;
             # Clean up resolved PagerDuty incident from cache.
             for my $i (0 .. $#PD_CACHE) {
@@ -84,19 +84,19 @@ sub signal_message_public {
             $pd_id = '';
         }
 
-        elsif ($msg =~ s/(P\w{6}|Q\w{13}) \*\*‼️ UNACKNOWLEDGED\*\*/\x02$1 \x0304‼️  UNACKNOWLEDGED\x0f/) {
+        elsif ($msg =~ s/(P\w{6}|Q\w{13}) (\*\*|\x02)‼️ UNACKNOWLEDGED(\*\*|\x02)/\x02$1 \x0304‼️  UNACKNOWLEDGED\x0f/) {
             $pd_id = $1;
         }
 
-        elsif ($msg =~ s/(P\w{6}|Q\w{13}) \*\*📤 ESCALATED\*\*/$1 \x02\x0306📤 ESCALATED\x0f/) {
+        elsif ($msg =~ s/(P\w{6}|Q\w{13}) (\*\*|\x02)📤 ESCALATED(\*\*|\x02)/$1 \x02\x0306📤 ESCALATED\x0f/) {
             $pd_id = $1;
         }
 
-        elsif ($msg =~ s/(P\w{6}|Q\w{13}) \*\*📥 REASSIGNED\*\*/$1 \x02\x0308📥 REASSIGNED\x0f/) {
+        elsif ($msg =~ s/(P\w{6}|Q\w{13}) (\*\*|\x02)📥 REASSIGNED(\*\*|\x02)/$1 \x02\x0308📥 REASSIGNED\x0f/) {
             $pd_id = $1;
         }
 
-        elsif ($msg =~ s/(P\w{6}|Q\w{13}) \*\*💤 SNOOZED\*\*/$1 \x02\x0312💤 SNOOZED\x0f/) {
+        elsif ($msg =~ s/(P\w{6}|Q\w{13}) (\*\*|\x02)💤 SNOOZED(\*\*|\x02)/$1 \x02\x0312💤 SNOOZED\x0f/) {
             $pd_id = $1;
         }
 
@@ -104,8 +104,8 @@ sub signal_message_public {
             # '**P3WQTNO** **PB5U6D4** **P3F46SI**' becomes 'P3WQTNO PB5U6D4 P3F46SI'
             # so we can easily just copy the entire list of
             # outstanding incidents and ack.
-            $msg =~ s/\*\*\*(P\w{6}|Q\w{13})\*\*\*/\x02\x0304$1\x0f/g;
-            $msg =~ s/\*\*(P\w{6}|Q\w{13})\*\*/\x02\x0307$1\x0f/g;
+            $msg =~ s/(?:\*\*\*|\x1d)(P\w{6}|Q\w{13})(?:\*\*\*|\x1d)/\x02\x0304$1\x0f/g;
+            $msg =~ s/(?:\*\*|\x02)(P\w{6}|Q\w{13})(?:\*\*|\x02)/\x02\x0307$1\x0f/g;
         }
 
         if ($pd_id) {
