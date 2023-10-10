@@ -61,15 +61,17 @@ sub signal_message_public {
     if (($target eq $pagerduty_channel) && ($nick eq $bot_nick)) {
         my $pd_id;
 
-        if ($msg =~ s/(P\w{6}|Q\w{13}) (\*\*|\x02)🆗 ACKNOWLEDGED(\*\*|\x02)/$1 \x02\x0307🆗 ACKNOWLEDGED\x0f/) {
-            $pd_id = $1;
-        }
-
-        elsif ($msg =~ s/(P\w{6}|Q\w{13}) (\*\*\*|\x1d)🚨 TRIGGERED(\*\*\*|\x1d)/\x02$1 \x0304🚨 TRIGGERED\x0f/) {
+        # Ordering matters, trigger first as that can also be part of the parent/thread msg.
+        if ($msg =~ s/(P\w{6}|Q\w{13}) (\*\*\*|\x1d)🚨 TRIGGERED(\*\*\*|\x1d)/\x02$1 \x0304🚨 TRIGGERED\x0f/) {
             $pd_id = $1;
         }
         # Backwards compatibility
         elsif ($msg =~ s/(P\w{6}|Q\w{13}) (\*\*|\x02)🚨 TRIGGERED(\*\*|\x02)/\x02$1 \x0304🚨 TRIGGERED\x0f/) {
+            $pd_id = $1;
+        }
+
+        # Then all the others.
+        if ($msg =~ s/(P\w{6}|Q\w{13}) (\*\*|\x02)🆗 ACKNOWLEDGED(\*\*|\x02)/$1 \x02\x0307🆗 ACKNOWLEDGED\x0f/) {
             $pd_id = $1;
         }
 
