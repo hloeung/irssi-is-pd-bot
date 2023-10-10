@@ -9,4 +9,4 @@ jobs:
       - irssi
       - perl-base
     run: |
-      perl -Mstrict -Mdiagnostics -cw /build/lpcraft/project/is-pd-bot.pl
+      perl -Mstrict -Mdiagnostics -cw is-pd-bot.pl
