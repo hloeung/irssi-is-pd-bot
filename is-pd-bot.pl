@@ -66,7 +66,7 @@ sub signal_message_public {
         # multiline to a RESOLVED so we don't populate the cache.
         if ($msg =~ m/\(re .*\@${bot_nick}: (P\w{6}|Q\w{13}) (\*\*\*?|\x02|\x1d)*🚨 TRIGGERED(\*\*\*?|\x1d|\x02)*/) {
             # We also strip emphasis to make it not so distracting.
-            $msg =~ s/\x02(\x1d)?🚨 TRIGGERED(\x1d)?\x02/🚨 TRIGGERED/;
+            $msg =~ s/(\(re .*)\x02(\x1d)?🚨 TRIGGERED(\x1d)?\x02/$1🚨 TRIGGERED/;
         }
 
         if ($msg =~ s/(P\w{6}|Q\w{13}) (\*\*|\x02)🆗 ACKNOWLEDGED(\*\*|\x02)/$1 \x02\x0307🆗 ACKNOWLEDGED\x0f/) {
