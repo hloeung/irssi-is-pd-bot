@@ -61,6 +61,14 @@ sub signal_message_public {
     if (($target eq $pagerduty_channel) && ($nick eq $bot_nick)) {
         my $pd_id;
 
+        # Ordering matters, TRIGGERED can also be part of the
+        # parent/thread msg. Handle TRIGGERED where it's a reply, or
+        # multiline to a RESOLVED so we don't populate the cache.
+        if ($msg =~ m/\(re .*\@${bot_nick}: (P\w{6}|Q\w{13}) (\*\*\*?|\x02|\x1d)*🚨 TRIGGERED(\*\*\*?|\x1d|\x02)*/) {
+            # We also strip emphasis to make it not so distracting.
+            $msg =~ s/\x02(\x1d)?🚨 TRIGGERED(\x1d)?\x02/🚨 TRIGGERED/;
+        }
+
         if ($msg =~ s/(P\w{6}|Q\w{13}) (\*\*|\x02)🆗 ACKNOWLEDGED(\*\*|\x02)/$1 \x02\x0307🆗 ACKNOWLEDGED\x0f/) {
             $pd_id = $1;
         }
@@ -92,13 +100,6 @@ sub signal_message_public {
             $pd_id = $1;
         }
 
-        # Handle triggers where it's a reply, or multiline to a
-        # resolved so we don't populate the cache.
-        elsif ($msg =~ m/\(re \@${bot_nick}: (P\w{6}|Q\w{13}) (\*\*\*?|\x1d)🚨 TRIGGERED(\*\*\*?|\x1d)/) {
-            # We also strip emphasis to make it not so distracting.
-            $msg =~ s/\x1d🚨 TRIGGERED\x1d/🚨 TRIGGERED/;
-        }
-        # Ordering matters, trigger can also be part of the parent/thread msg.
         elsif ($msg =~ s/(P\w{6}|Q\w{13}) (\*\*\*|\x1d)🚨 TRIGGERED(\*\*\*|\x1d)/\x02$1 \x0304🚨 TRIGGERED\x0f/) {
             $pd_id = $1;
         }
