@@ -149,7 +149,7 @@ sub signal_message_public {
             $msg =~ s/now resolved\./\x02\x0303now resolved\x0f./;
         }
 
-        elsif ($nick ~~ @noisy_bots) {
+        elsif (grep(/^$nick$/, @noisy_bots)) {
             $msg =~ s/^\[/\x0314[/;
         }
     }
