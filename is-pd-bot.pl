@@ -84,7 +84,7 @@ sub signal_message_public {
             $pd_id = '';
         }
 
-        elsif ($msg =~ s/(P\w{6}|Q\w{13}) (\*\*|\x02)‼️ UNACKNOWLEDGED(\*\*|\x02)/\x02$1 \x0304‼️  UNACKNOWLEDGED\x0f/) {
+        elsif ($msg =~ s/(P\w{6}|Q\w{13}) (\*\*|\x02)‼️ UNACKNOWLEDGED(\*\*|\x02)/\x02$1 \x0304‼️ UNACKNOWLEDGED\x0f/) {
             $pd_id = $1;
         }
 
