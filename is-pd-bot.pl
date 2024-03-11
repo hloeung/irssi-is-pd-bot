@@ -116,6 +116,9 @@ sub signal_message_public {
             $msg =~ s/(?:\*\*|\x02)(P\w{6}|Q\w{13})(?:\*\*|\x02)/\x02\x0307$1\x0f/g;
         }
 
+        # Bold the anchor to source & playbook and other details.
+        $msg =~ s/^↪/\x02↪\x0f/;
+
         if ($pd_id) {
             # Reset search index on changes.
             if ($PD_CACHE[0] && ($PD_CACHE[0] ne $pd_id)) {
