@@ -64,7 +64,7 @@ sub signal_message_public {
         # Ordering matters, TRIGGERED can also be part of the
         # parent/thread msg. Handle TRIGGERED where it's a reply, or
         # multiline to a RESOLVED so we don't populate the cache.
-        if ($msg =~ m/\(re .*\@${bot_nick}: (P\w{6}|Q\w{13}) (\*\*\*?|\x02|\x1d)*🚨 TRIGGERED(\*\*\*?|\x1d|\x02)*/) {
+        if ($msg =~ m/\(re .*\@${bot_nick}: (P\w{6}|Q\w{13}) (\*\*|\*\*\*|\x02|\x1d|\x02\x1d)🚨 TRIGGERED(\*\*|\*\*\*|\x1d|\x02|\x1d\x02)*/) {
             # We also strip emphasis to make it not so distracting.
             $msg =~ s/(\(re .*)\x02(\x1d)?🚨 TRIGGERED(\x1d)?\x02/$1🚨 TRIGGERED/;
         }
@@ -100,11 +100,7 @@ sub signal_message_public {
             $pd_id = $1;
         }
 
-        elsif ($msg =~ s/(P\w{6}|Q\w{13}) (\*\*\*|\x1d)🚨 TRIGGERED(\*\*\*|\x1d)/\x02$1 \x0304🚨 TRIGGERED\x0f/) {
-            $pd_id = $1;
-        }
-        # Backwards compatibility
-        elsif ($msg =~ s/(P\w{6}|Q\w{13}) (\*\*|\x02)🚨 TRIGGERED(\*\*|\x02)/\x02$1 \x0304🚨 TRIGGERED\x0f/) {
+        elsif ($msg =~ s/(P\w{6}|Q\w{13}) (\*\*\*?|\x02|\x02\x1d)🚨 TRIGGERED(\*\*\*?|\x02|\x1d\x02)/\x02$1 \x0304🚨 TRIGGERED\x0f/) {
             $pd_id = $1;
         }
 
