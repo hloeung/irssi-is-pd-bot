@@ -88,7 +88,8 @@ sub signal_message_public {
             $pd_id = $1;
         }
 
-        elsif ($msg =~ s/(P\w{6}|Q\w{13}) (\*\*|\x02)📤 ESCALATED(\*\*|\x02)/$1 \x02\x0306📤 ESCALATED\x0f/) {
+        # We have to use ANSI because irssi doesn't support hex color codes - https://github.com/irssi/irssi/issues/1508
+        elsif ($msg =~ s/(P\w{6}|Q\w{13}) (\*\*|\x02)📤 ESCALATED(\*\*|\x02)/$1 \x1b[1;38;2;82;50;204m📤 ESCALATED\x1b[0m/) {
             $pd_id = $1;
         }
 
