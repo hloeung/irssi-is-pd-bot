@@ -169,6 +169,8 @@ sub cmd_pagerduty_cache_dump {
             my $status_str = (exists $PD_STATUS{$pd_id} && length $PD_STATUS{$pd_id}) ? " ($PD_STATUS{$pd_id})" : "";
             _wi_print($wi, "${col}[${short_t}]\x0f -> $pd_id$status_str");
         }
+    } elsif (scalar(keys %{$THREAD_PD_MAP{$server_tag}}) == 0) {
+        _wi_print($wi, 'Empty PagerDuty incidents in cache, see ' . $pd_url);
     }
 };
 Irssi::command_bind('pagerduty_cache_dump', 'cmd_pagerduty_cache_dump');
