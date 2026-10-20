@@ -106,8 +106,8 @@ sub signal_message_public {
             }
         }
         # Match active PagerDuty incidents to populate cache (same-line or wrapped table)
-        elsif (($clean_msg =~ /(P\w{6}|Q\w{13})\s+.*(?:🚨 TRIGGERED|🆗 ACKNOWLEDGED|‼ UNACKNOWLEDGED|📤 ESCALATED|📥 (?:RE)?ASSIGNED|💤 SNOOZED)/)
-            || ($PENDING_PD_ID && $clean_msg =~ /(?:🚨 TRIGGERED|🆗 ACKNOWLEDGED|‼ UNACKNOWLEDGED|📤 ESCALATED|📥 (?:RE)?ASSIGNED|💤 SNOOZED)/)) {
+        elsif (($clean_msg =~ /(P\w{6}|Q\w{13})\s+.*(?:🚨 TRIGGERED|🆗 ACKNOWLEDGED|‼️ UNACKNOWLEDGED|📤 ESCALATED|📥 (?:RE)?ASSIGNED|💤 SNOOZED)/)
+            || ($PENDING_PD_ID && $clean_msg =~ /(?:🚨 TRIGGERED|🆗 ACKNOWLEDGED|‼️ UNACKNOWLEDGED|📤 ESCALATED|📥 (?:RE)?ASSIGNED|💤 SNOOZED)/)) {
             $pd_id = $1 || $PENDING_PD_ID;
             $PENDING_PD_ID = undef;
         }
