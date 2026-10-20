@@ -173,19 +173,21 @@ sub signal_message_public {
         my $tid;
         if ($clean_msg =~ /\[(?:->|↪)?\@\@([0-9a-z]{1,26}|\$[0-9A-Za-z\-_\.]{1,43})/) {
             $tid = $1;
-        } elsif ($clean_msg =~ /\[(?:->|↪)([0-9a-z]{1,25})(?:…|\.\.\.|[\],])/) {
+        } elsif ($clean_msg =~ /\[(?:->|↪)([0-9a-z]{1,26}|\$[0-9A-Za-z\-_\.]{1,43})(?:…|\.\.\.|\]|,)/) {
             $tid = $1;
-        } elsif ($clean_msg =~ /\[([0-9a-f]{3}|[0-9a-z]{1,25}(?:…|\.\.\.))\]/) {
+        } elsif ($clean_msg =~ /\[([0-9a-f]{3}|[0-9a-z]{26}|\$[0-9A-Za-z\-_\.]{1,43}|[0-9a-z]{1,25}(?:…|\.\.\.))\]/) {
             $tid = $1;
             $tid =~ s/(?:…|\.\.\.)$//;
         }
         $tid = resolve_thread_id($target, $tid) if $tid;
 
-        # Avoid cross-thread state bleed if a message from another thread arrives
-        if ($tid && $PENDING_TID && $tid ne $PENDING_TID) {
-            $PENDING_PD_ID = undef;
+        # Clear pending incident when explicit thread changes
+        if ($tid) {
+            if ($PENDING_TID && $tid ne $PENDING_TID) {
+                $PENDING_PD_ID = undef;
+            }
+            $PENDING_TID = $tid;
         }
-        $PENDING_TID = $tid if $tid;
 
         # Track pending incident ID from URL or table row (prevent matching common words)
         if ($clean_msg =~ /(?:incidents\/|[🮇\|]\s*|^)(P[A-Z0-9]{6}|Q[A-Z0-9]{13})\b/ && $clean_msg !~ /Alert ID/) {
@@ -207,16 +209,16 @@ sub signal_message_public {
             }
         }
         # Match active PagerDuty incidents to populate cache (same-line or wrapped table)
-        elsif ($clean_msg =~ /(P[A-Z0-9]{6}|Q[A-Z0-9]{13})\s+.*(🚨 TRIGGERED|🆗 ACKNOWLEDGED|‼️ UNACKNOWLEDGED|📤 ESCALATED|📥 (?:RE)?ASSIGNED|💤 SNOOZED)/) {
+        elsif ($clean_msg =~ /(P[A-Z0-9]{6}|Q[A-Z0-9]{13})\s+.*(🚨 TRIGGERED|🆗 ACKNOWLEDGED|(?:‼|‼️|!!) UNACKNOWLEDGED|📤 ESCALATED|📥 (?:RE)?ASSIGNED|💤 SNOOZED)/) {
             $pd_id = $1;
-            $PD_STATUS{$pd_id} = $2;
+            $PD_STATUS{$pd_id} = ($2 =~ /UNACKNOWLEDGED/) ? '‼ UNACKNOWLEDGED' : $2;
             set_thread_pd_map($tid || $PENDING_TID, $pd_id);
             $PENDING_PD_ID = undef;
             $PENDING_TID   = undef;
         }
-        elsif ($PENDING_PD_ID && $clean_msg =~ /(🚨 TRIGGERED|🆗 ACKNOWLEDGED|‼️ UNACKNOWLEDGED|📤 ESCALATED|📥 (?:RE)?ASSIGNED|💤 SNOOZED)/) {
+        elsif ($PENDING_PD_ID && $clean_msg =~ /(🚨 TRIGGERED|🆗 ACKNOWLEDGED|(?:‼|‼️|!!) UNACKNOWLEDGED|📤 ESCALATED|📥 (?:RE)?ASSIGNED|💤 SNOOZED)/) {
             $pd_id = $PENDING_PD_ID;
-            $PD_STATUS{$pd_id} = $1;
+            $PD_STATUS{$pd_id} = ($1 =~ /UNACKNOWLEDGED/) ? '‼ UNACKNOWLEDGED' : $1;
             set_thread_pd_map($tid || $PENDING_TID, $pd_id);
             $PENDING_PD_ID = undef;
             $PENDING_TID   = undef;
@@ -270,14 +272,17 @@ sub signal_complete_word_pagerduty {
         $thread_id = $1;
     }
     if ($thread_id) {
-        my $full_tid = resolve_thread_id($pagerduty_channel, $thread_id);
-        my $mapped_id = $THREAD_PD_MAP{$full_tid} // $THREAD_PD_MAP{$thread_id};
-        if (!$mapped_id) {
-            for my $t (keys %THREAD_PD_MAP) {
-                if (index($t, $thread_id) == 0 || index($thread_id, $t) == 0) {
-                    $mapped_id = $THREAD_PD_MAP{$t};
-                    last;
-                }
+        my $channel = (lc($window->{active}->{name}) eq lc($pagerduty_channel)) ? $window->{active}->{name} : $pagerduty_channel;
+        my $target_tid = resolve_thread_id($channel, $thread_id);
+        my $mapped_id;
+        if (exists $THREAD_PD_MAP{$target_tid}) {
+            $mapped_id = $THREAD_PD_MAP{$target_tid};
+        } else {
+            my @matches = grep {
+                index($_, $target_tid) == 0 || index($target_tid, $_) == 0
+            } keys %THREAD_PD_MAP;
+            if (@matches == 1) {
+                $mapped_id = $THREAD_PD_MAP{$matches[0]};
             }
         }
         if ($mapped_id && index(uc($mapped_id), uc($word)) == 0) {
@@ -317,27 +322,31 @@ sub cmd_pagerduty_cache_search {
 
     if ($thread_id) {
         my $channel = (lc($wi->{name}) eq lc($pagerduty_channel)) ? $wi->{name} : $pagerduty_channel;
-        my $full_tid = resolve_thread_id($channel, $thread_id);
+        my $target_tid = resolve_thread_id($channel, $thread_id);
 
-        if (exists $THREAD_PD_MAP{$full_tid}) {
-            $pd_id = $THREAD_PD_MAP{$full_tid};
-        } elsif (exists $THREAD_PD_MAP{$thread_id}) {
-            $pd_id = $THREAD_PD_MAP{$thread_id};
+        if (exists $THREAD_PD_MAP{$target_tid}) {
+            $pd_id = $THREAD_PD_MAP{$target_tid};
         } else {
-            for my $t (keys %THREAD_PD_MAP) {
-                if (index($t, $thread_id) == 0 || index($thread_id, $t) == 0) {
-                    $pd_id = $THREAD_PD_MAP{$t};
-                    last;
-                }
+            my @matches = grep {
+                index($_, $target_tid) == 0 || index($target_tid, $_) == 0
+            } keys %THREAD_PD_MAP;
+
+            if (@matches == 1) {
+                $pd_id = $THREAD_PD_MAP{$matches[0]};
+            } elsif (@matches > 1) {
+                # Ambiguous prefix across mapped threads; leave input unchanged
+                return;
             }
         }
+        return unless $pd_id;
     }
 
-    # If not in thread context or thread has no mapped incident, cycle active cache
+    # If not in thread context, cycle active cache
     if (!$pd_id && @PD_CACHE) {
         $pd_id = $PD_CACHE[$PD_CACHE_INDEX];
         $PD_CACHE_INDEX += 1;
         if ($PD_CACHE_INDEX > $#PD_CACHE) {
+            # Cycle back to the start.
             $PD_CACHE_INDEX = 0;
         }
     }
@@ -345,14 +354,15 @@ sub cmd_pagerduty_cache_search {
     if ($pd_id) {
         $PD_CACHE_SEARCH_ENABLED = 1;
 
-        # Remove previously inserted PagerDuty incident, or append with spacing
-        if (!($input =~ s/(P[A-Z0-9]{6}|Q[A-Z0-9]{13})$//) && $input =~ /\S$/) {
-            $input .= ' ';
+        # Replace previously inserted standalone PagerDuty incident, or append with spacing
+        if (!($input =~ s/(^|\s)(P[A-Z0-9]{6}|Q[A-Z0-9]{13})$/${1}${pd_id}/)) {
+            $input .= ' ' if $input =~ /\S$/;
+            $input .= $pd_id;
         }
 
         # Insert PagerDuty incident from cache.
         Irssi::gui_input_set_pos(0);
-        Irssi::gui_input_set($input . $pd_id);
+        Irssi::gui_input_set($input);
 
         $PD_ADDED = 1;
     }
@@ -388,9 +398,9 @@ sub signal_gui_key_pressed {
 
         if ($PD_ADDED) {
             my $pos = Irssi::gui_input_get_pos();
-            if ($input =~ s/\s*(P[A-Z0-9]{6}|Q[A-Z0-9]{13})$//) {
-                # 7 chars for P-ids, 14 chars for Q-ids
-                $pos -= length($1);
+            if ($input =~ s/(^|\s)(P[A-Z0-9]{6}|Q[A-Z0-9]{13})$//) {
+                # 7 chars for P-ids, 14 chars for Q-ids + any leading whitespace
+                $pos -= length($1 . $2);
             }
 
             # We also want to move the input position back one for
