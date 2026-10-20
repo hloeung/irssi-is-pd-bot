@@ -222,7 +222,7 @@ sub cmd_pagerduty_cache_dump {
             my $status_str = (exists $PD_STATUS{$server_tag}{$pd_id} && length $PD_STATUS{$server_tag}{$pd_id}) ? " ($PD_STATUS{$server_tag}{$pd_id})" : "";
             _wi_print($wi, "${col}[${short_t}]\x0f -> $pd_id$status_str");
         }
-    } elsif (scalar(keys %{$THREAD_PD_MAP{$server_tag}}) == 0) {
+    } else {
         _wi_print($wi, 'Empty PagerDuty incidents in cache, see ' . $pd_url);
     }
 };
