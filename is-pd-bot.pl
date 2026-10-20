@@ -504,7 +504,7 @@ sub cmd_pagerduty_cache_search {
         }
 
         # Replace previously inserted standalone PagerDuty incident, or append with spacing
-        if (!($input =~ s/(P[A-Z0-9]{6}|Q[A-Z0-9]{13})$/${pd_id}/)) {
+        if (!$PD_ADDED || !($input =~ s/(?<!\S)(P[A-Z0-9]{6}|Q[A-Z0-9]{13})\z/${pd_id}/)) {
             $PD_SEPARATOR_ADDED = ($input =~ /\S$/) ? 1 : 0;
             $input .= ' ' if $PD_SEPARATOR_ADDED;
             $input .= $pd_id;
