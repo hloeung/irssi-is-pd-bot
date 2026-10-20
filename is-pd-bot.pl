@@ -117,6 +117,7 @@ sub is_pd_id_mapped {
 sub set_thread_pd_map {
     my ($server_tag, $tid, $pd_id) = @_;
     return unless $server_tag && $tid && $pd_id;
+    my $prev_pd_id = $THREAD_PD_MAP{$server_tag}{$tid};
     $THREAD_PD_MAP{$server_tag}{$tid} = $pd_id;
     # Maintain LRU ordering
     @{$THREAD_PD_ORDER{$server_tag}} = grep { $_ ne $tid } @{$THREAD_PD_ORDER{$server_tag} // []};
@@ -127,6 +128,9 @@ sub set_thread_pd_map {
         if ($old_pd_id && !(grep { $_ eq $old_pd_id } @PD_CACHE) && !is_pd_id_mapped($old_pd_id)) {
             delete $PD_STATUS{$old_pd_id};
         }
+    }
+    if ($prev_pd_id && $prev_pd_id ne $pd_id && !(grep { $_ eq $prev_pd_id } @PD_CACHE) && !is_pd_id_mapped($prev_pd_id)) {
+        delete $PD_STATUS{$prev_pd_id};
     }
 }
 
@@ -203,9 +207,9 @@ sub signal_message_public {
         }
 
         # Track pending incident ID from URL, table row, or wrapped bare ID
-        if ($clean_msg =~ /(?:incidents\/|[🮇\|]\s*|^(?:\s*\[[^\]]+\])*\s*)(P[A-Z0-9]{6}|Q[A-Z0-9]{13})\b/ && $clean_msg !~ /Alert ID/) {
-            $PENDING_PD_ID{$server_tag} = $1;
-            set_thread_pd_map($server_tag, $tid, $PENDING_PD_ID{$server_tag});
+        if ($clean_msg =~ /(?:incidents\/|[🮇\|]\s*|\b)(P[A-Z0-9]{6}|Q[A-Z0-9]{13})\b/ && $clean_msg !~ /Alert ID/) {
+            $PENDING_PD_ID = $1;
+            set_thread_pd_map($server_tag, $tid, $PENDING_PD_ID);
         }
 
         # Clean up resolved PagerDuty incident from cache (same-line or wrapped table)
