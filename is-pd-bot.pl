@@ -107,13 +107,12 @@ my %PD_STATUS;
 sub set_thread_pd_map {
     my ($tid, $pd_id) = @_;
     return unless $tid && $pd_id;
-    # Maintain LRU ordering
     @THREAD_PD_ORDER = grep { $_ ne $tid } @THREAD_PD_ORDER;
     push(@THREAD_PD_ORDER, $tid);
     if (@THREAD_PD_ORDER > 50) {
         my $old_tid = shift(@THREAD_PD_ORDER);
         my $old_pd_id = delete $THREAD_PD_MAP{$old_tid};
-        if ($old_pd_id && !grep { $_ eq $old_pd_id } @PD_CACHE && !grep { $_ eq $old_pd_id } values %THREAD_PD_MAP) {
+        if ($old_pd_id && !(grep { $_ eq $old_pd_id } @PD_CACHE) && !(grep { $_ eq $old_pd_id } values %THREAD_PD_MAP)) {
             delete $PD_STATUS{$old_pd_id};
         }
     }
@@ -167,7 +166,7 @@ sub signal_message_public {
         # parent/thread msg. Ignore thread reply quotes so
         # quoted parent incidents don't re-enter the cache.
         my $clean_msg = $msg;
-        $clean_msg =~ s/\(re .*\@${bot_nick}: .*?\)//g;
+        $clean_msg =~ s/\(re [^)]*\@${bot_nick}: .*?\)//g;
 
         # Extract thread ID from message brackets if present
         my $tid;
@@ -189,17 +188,16 @@ sub signal_message_public {
             $PENDING_TID = $tid;
         }
 
-        # Track pending incident ID from URL or table row (prevent matching common words)
-        if ($clean_msg =~ /(?:incidents\/|[🮇\|]\s*|^)(P[A-Z0-9]{6}|Q[A-Z0-9]{13})\b/ && $clean_msg !~ /Alert ID/) {
+        # Track pending incident ID from URL, table row, or wrapped bare ID
+        if ($clean_msg =~ /(?:incidents\/|[🮇\|]\s*|^(?:\s*\[[^\]]+\])*\s*)(P[A-Z0-9]{6}|Q[A-Z0-9]{13})\b/ && $clean_msg !~ /Alert ID/) {
             $PENDING_PD_ID = $1;
-            set_thread_pd_map($tid || $PENDING_TID, $PENDING_PD_ID);
+            set_thread_pd_map($tid, $PENDING_PD_ID);
         }
 
         # Clean up resolved PagerDuty incident from cache (same-line or wrapped table)
-        if (($clean_msg =~ /(P[A-Z0-9]{6}|Q[A-Z0-9]{13})\s+.*✅ RESOLVED/) || ($PENDING_PD_ID && $clean_msg =~ /✅ RESOLVED/)) {
-            my $resolved_id = $1 || $PENDING_PD_ID;
-            set_thread_pd_map($tid || $PENDING_TID, $resolved_id);
-            $PD_STATUS{$resolved_id} = '✅ RESOLVED';
+        if ($clean_msg =~ /(P[A-Z0-9]{6}|Q[A-Z0-9]{13})\s+.*✅ RESOLVED/) {
+            my $resolved_id = $1;
+            set_thread_pd_map($tid, $resolved_id);
             $PENDING_PD_ID = undef;
             $PENDING_TID   = undef;
             for my $i (0 .. $#PD_CACHE) {
@@ -207,19 +205,42 @@ sub signal_message_public {
                     splice(@PD_CACHE, $i, 1);
                 }
             }
+            if (grep { $_ eq $resolved_id } values %THREAD_PD_MAP) {
+                $PD_STATUS{$resolved_id} = '✅ RESOLVED';
+            } else {
+                delete $PD_STATUS{$resolved_id};
+            }
+        }
+        elsif ($PENDING_PD_ID && $clean_msg =~ /✅ RESOLVED/) {
+            my $resolved_id = $PENDING_PD_ID;
+            my $map_tid = $tid || $PENDING_TID;
+            set_thread_pd_map($map_tid, $resolved_id);
+            $PENDING_PD_ID = undef;
+            $PENDING_TID   = undef;
+            for my $i (0 .. $#PD_CACHE) {
+                if ($PD_CACHE[$i] && ($PD_CACHE[$i] eq $resolved_id)) {
+                    splice(@PD_CACHE, $i, 1);
+                }
+            }
+            if (grep { $_ eq $resolved_id } values %THREAD_PD_MAP) {
+                $PD_STATUS{$resolved_id} = '✅ RESOLVED';
+            } else {
+                delete $PD_STATUS{$resolved_id};
+            }
         }
         # Match active PagerDuty incidents to populate cache (same-line or wrapped table)
         elsif ($clean_msg =~ /(P[A-Z0-9]{6}|Q[A-Z0-9]{13})\s+.*(🚨 TRIGGERED|🆗 ACKNOWLEDGED|(?:‼|‼️|!!) UNACKNOWLEDGED|📤 ESCALATED|📥 (?:RE)?ASSIGNED|💤 SNOOZED)/) {
             $pd_id = $1;
             $PD_STATUS{$pd_id} = ($2 =~ /UNACKNOWLEDGED/) ? '‼ UNACKNOWLEDGED' : $2;
-            set_thread_pd_map($tid || $PENDING_TID, $pd_id);
+            set_thread_pd_map($tid, $pd_id);
             $PENDING_PD_ID = undef;
             $PENDING_TID   = undef;
         }
         elsif ($PENDING_PD_ID && $clean_msg =~ /(🚨 TRIGGERED|🆗 ACKNOWLEDGED|(?:‼|‼️|!!) UNACKNOWLEDGED|📤 ESCALATED|📥 (?:RE)?ASSIGNED|💤 SNOOZED)/) {
             $pd_id = $PENDING_PD_ID;
             $PD_STATUS{$pd_id} = ($1 =~ /UNACKNOWLEDGED/) ? '‼ UNACKNOWLEDGED' : $1;
-            set_thread_pd_map($tid || $PENDING_TID, $pd_id);
+            my $map_tid = $tid || $PENDING_TID;
+            set_thread_pd_map($map_tid, $pd_id);
             $PENDING_PD_ID = undef;
             $PENDING_TID   = undef;
         }
@@ -241,7 +262,7 @@ sub signal_message_public {
             # Remove last seen PagerDuty incidents if reached max. cache size.
             if (scalar(@PD_CACHE) > Irssi::settings_get_int('pagerduty_cache_size')) {
                 my $popped = pop(@PD_CACHE);
-                if ($popped && !grep { $_ eq $popped } values %THREAD_PD_MAP) {
+                if ($popped && !(grep { $_ eq $popped } values %THREAD_PD_MAP)) {
                     delete $PD_STATUS{$popped};
                 }
             }
