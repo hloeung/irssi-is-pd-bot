@@ -99,8 +99,8 @@ sub short_thread_id {
 }
 
 my @PD_CACHE;
-my $PENDING_PD_ID;
-my $PENDING_TID;
+my %PENDING_PD_ID;
+my %PENDING_TID;
 my %THREAD_PD_MAP;
 my %THREAD_PD_ORDER;
 my %PD_STATUS;
@@ -193,32 +193,32 @@ sub signal_message_public {
         $tid = resolve_thread_id($target, $tid) if $tid;
 
         # Clear pending continuation if explicit thread context changes; carry pending thread on untagged continuations
-        if ($PENDING_TID && defined($tid) && $tid ne $PENDING_TID) {
-            $PENDING_PD_ID = undef;
+        if ($PENDING_TID{$server_tag} && defined($tid) && $tid ne $PENDING_TID{$server_tag}) {
+            $PENDING_PD_ID{$server_tag} = undef;
         }
         if ($tid) {
-            $PENDING_TID = $tid;
+            $PENDING_TID{$server_tag} = $tid;
         } else {
-            $tid = $PENDING_TID;
+            $tid = $PENDING_TID{$server_tag};
         }
 
         # Track pending incident ID from URL, table row, or wrapped bare ID
         if ($clean_msg =~ /(?:incidents\/|[🮇\|]\s*|^(?:\s*\[[^\]]+\])*\s*)(P[A-Z0-9]{6}|Q[A-Z0-9]{13})\b/ && $clean_msg !~ /Alert ID/) {
-            $PENDING_PD_ID = $1;
-            set_thread_pd_map($server_tag, $tid, $PENDING_PD_ID);
+            $PENDING_PD_ID{$server_tag} = $1;
+            set_thread_pd_map($server_tag, $tid, $PENDING_PD_ID{$server_tag});
         }
 
         # Clean up resolved PagerDuty incident from cache (same-line or wrapped table)
-        if (($clean_msg =~ /(P[A-Z0-9]{6}|Q[A-Z0-9]{13})\s+.*✅ RESOLVED/) || ($PENDING_PD_ID && $clean_msg =~ /✅ RESOLVED/)) {
-            my $resolved_id = $1 || $PENDING_PD_ID;
+        if (($clean_msg =~ /(P[A-Z0-9]{6}|Q[A-Z0-9]{13})\s+.*✅ RESOLVED/) || ($PENDING_PD_ID{$server_tag} && $clean_msg =~ /✅ RESOLVED/)) {
+            my $resolved_id = $1 || $PENDING_PD_ID{$server_tag};
             set_thread_pd_map($server_tag, $tid, $resolved_id);
             if (is_pd_id_mapped($resolved_id)) {
                 $PD_STATUS{$resolved_id} = '✅ RESOLVED';
             } else {
                 delete $PD_STATUS{$resolved_id};
             }
-            $PENDING_PD_ID = undef;
-            $PENDING_TID   = undef;
+            $PENDING_PD_ID{$server_tag} = undef;
+            $PENDING_TID{$server_tag}   = undef;
             for my $i (0 .. $#PD_CACHE) {
                 if ($PD_CACHE[$i] && ($PD_CACHE[$i] eq $resolved_id)) {
                     splice(@PD_CACHE, $i, 1);
@@ -227,21 +227,21 @@ sub signal_message_public {
             }
         }
         # Match active PagerDuty incidents to populate cache (same-line or wrapped table)
-        elsif ($clean_msg =~ /(P[A-Z0-9]{6}|Q[A-Z0-9]{13})\s+.*(🚨 TRIGGERED|🆗 ACKNOWLEDGED|(?:‼|‼️ |!!) UNACKNOWLEDGED|📤 ESCALATED|📥 (?:RE)?ASSIGNED|💤 SNOOZED)/) {
+        elsif ($clean_msg =~ /(P[A-Z0-9]{6}|Q[A-Z0-9]{13})\s+.*(🚨 TRIGGERED|🆗 ACKNOWLEDGED|(?:‼|‼️|!!) UNACKNOWLEDGED|📤 ESCALATED|📥 (?:RE)?ASSIGNED|💤 SNOOZED)/) {
             $pd_id = $1;
             my $raw_status = $2;
             $PD_STATUS{$pd_id} = ($raw_status =~ /UNACKNOWLEDGED/) ? '‼️ UNACKNOWLEDGED' : $raw_status;
             set_thread_pd_map($server_tag, $tid, $pd_id);
-            $PENDING_PD_ID = undef;
-            $PENDING_TID   = undef;
+            $PENDING_PD_ID{$server_tag} = undef;
+            $PENDING_TID{$server_tag}   = undef;
         }
-        elsif ($PENDING_PD_ID && $clean_msg =~ /(🚨 TRIGGERED|🆗 ACKNOWLEDGED|(?:‼|‼️ |!!) UNACKNOWLEDGED|📤 ESCALATED|📥 (?:RE)?ASSIGNED|💤 SNOOZED)/) {
-            $pd_id = $PENDING_PD_ID;
+        elsif ($PENDING_PD_ID{$server_tag} && $clean_msg =~ /(🚨 TRIGGERED|🆗 ACKNOWLEDGED|(?:‼|‼️|!!) UNACKNOWLEDGED|📤 ESCALATED|📥 (?:RE)?ASSIGNED|💤 SNOOZED)/) {
+            $pd_id = $PENDING_PD_ID{$server_tag};
             my $raw_status = $1;
             $PD_STATUS{$pd_id} = ($raw_status =~ /UNACKNOWLEDGED/) ? '‼️ UNACKNOWLEDGED' : $raw_status;
             set_thread_pd_map($server_tag, $tid, $pd_id);
-            $PENDING_PD_ID = undef;
-            $PENDING_TID   = undef;
+            $PENDING_PD_ID{$server_tag} = undef;
+            $PENDING_TID{$server_tag}   = undef;
         }
 
         if ($pd_id) {
