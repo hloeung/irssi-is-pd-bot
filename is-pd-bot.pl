@@ -437,8 +437,13 @@ sub pagerduty_search_context_matches {
 }
 
 Irssi::signal_add('window changed', 'reset_pagerduty_search');
-Irssi::signal_add('window item changed', 'reset_pagerduty_search');
-Irssi::signal_add('window server changed', 'reset_pagerduty_search');
+sub signal_pagerduty_window_context_changed {
+    my ($window) = @_;
+    return unless $window && exists $PD_SEARCH_CONTEXT{window};
+    reset_pagerduty_search() if $window->{refnum} == $PD_SEARCH_CONTEXT{window};
+}
+Irssi::signal_add('window item changed', 'signal_pagerduty_window_context_changed');
+Irssi::signal_add('window server changed', 'signal_pagerduty_window_context_changed');
 
 sub cmd_pagerduty_cache_search {
     my ($data, $server, $wi) = @_;
@@ -530,8 +535,15 @@ sub signal_gui_key_pressed {
 
     my $server = Irssi::active_server();
     my $input = Irssi::parse_special('$L');
+    my $ctrl_c_inserted = 0;
     # Irssi may already have inserted Ctrl+C before this last-priority handler.
-    $input =~ tr/\x03//d if $key == $KEY_CTRL_C;
+    if ($key == $KEY_CTRL_C && $input ne $PD_SEARCH_CONTEXT{input}) {
+        my $pos = Irssi::gui_input_get_pos();
+        if ($pos > 0 && substr($input, $pos - 1, 1) eq "\x03") {
+            substr($input, $pos - 1, 1, '');
+            $ctrl_c_inserted = 1;
+        }
+    }
     unless (chatnet_enabled($server)
         && pagerduty_search_context_matches(Irssi::active_win(), $server, $input)) {
         reset_pagerduty_search();
@@ -545,20 +557,15 @@ sub signal_gui_key_pressed {
     # Cancel/abort.
     elsif ($key == $KEY_CTRL_C) {
         if ($PD_ADDED) {
-            my $pos = Irssi::gui_input_get_pos();
+            my $pos = Irssi::gui_input_get_pos() - $ctrl_c_inserted;
             if ($PD_SEPARATOR_ADDED) {
-                if ($input =~ s/\s(P[A-Z0-9]{6}|Q[A-Z0-9]{13})$//) {
-                    $pos -= length($1) + 1;
-                }
+                $input =~ s/\s(P[A-Z0-9]{6}|Q[A-Z0-9]{13})$//;
             } else {
-                if ($input =~ s/(P[A-Z0-9]{6}|Q[A-Z0-9]{13})$//) {
-                    $pos -= length($1);
-                }
+                $input =~ s/(P[A-Z0-9]{6}|Q[A-Z0-9]{13})$//;
             }
 
-            # We also want to move the input position back one for
-            # Ctrl+C char.
-            $pos = $pos > 0 ? $pos - 1 : 0;
+            $pos = length($input) if $pos > length($input);
+            $pos = 0 if $pos < 0;
 
             # Replace the text in the input box with our modified
             # version, then move cursor positon to where it was
