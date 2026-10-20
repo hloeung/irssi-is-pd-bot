@@ -20,6 +20,7 @@ our %IRSSI = (
 Irssi::settings_add_str('matterircd_complete', 'matterircd_complete_networks', '');
 Irssi::settings_add_str('is_pd_bot', 'is_pd_bot_nick', 'is-pd-bot');
 Irssi::settings_add_str('is_pd_bot', 'is_pd_bot_pagerduty_channel', 'is-pagerduty');
+Irssi::settings_add_int('is_pd_bot', 'is_pd_bot_pagerduty_cache_size', 20);
 
 my $pd_url = 'https://canonical.pagerduty.com/incidents/';
 
@@ -101,29 +102,39 @@ my @PD_CACHE;
 my $PENDING_PD_ID;
 my $PENDING_TID;
 my %THREAD_PD_MAP;
-my @THREAD_PD_ORDER;
+my %THREAD_PD_ORDER;
 my %PD_STATUS;
 
+sub is_pd_id_mapped {
+    my ($id) = @_;
+    return 0 unless defined $id;
+    for my $server_map (values %THREAD_PD_MAP) {
+        return 1 if grep { $_ eq $id } values %$server_map;
+    }
+    return 0;
+}
+
 sub set_thread_pd_map {
-    my ($tid, $pd_id) = @_;
-    return unless $tid && $pd_id;
-    @THREAD_PD_ORDER = grep { $_ ne $tid } @THREAD_PD_ORDER;
-    push(@THREAD_PD_ORDER, $tid);
-    if (@THREAD_PD_ORDER > 50) {
-        my $old_tid = shift(@THREAD_PD_ORDER);
-        my $old_pd_id = delete $THREAD_PD_MAP{$old_tid};
-        if ($old_pd_id && !(grep { $_ eq $old_pd_id } @PD_CACHE) && !(grep { $_ eq $old_pd_id } values %THREAD_PD_MAP)) {
+    my ($server_tag, $tid, $pd_id) = @_;
+    return unless $server_tag && $tid && $pd_id;
+    $THREAD_PD_MAP{$server_tag}{$tid} = $pd_id;
+    # Maintain LRU ordering
+    @{$THREAD_PD_ORDER{$server_tag}} = grep { $_ ne $tid } @{$THREAD_PD_ORDER{$server_tag} // []};
+    push(@{$THREAD_PD_ORDER{$server_tag}}, $tid);
+    if (@{$THREAD_PD_ORDER{$server_tag}} > 50) {
+        my $old_tid = shift(@{$THREAD_PD_ORDER{$server_tag}});
+        my $old_pd_id = delete $THREAD_PD_MAP{$server_tag}{$old_tid};
+        if ($old_pd_id && !(grep { $_ eq $old_pd_id } @PD_CACHE) && !is_pd_id_mapped($old_pd_id)) {
             delete $PD_STATUS{$old_pd_id};
         }
     }
-    $THREAD_PD_MAP{$tid} = $pd_id;
 }
 
-Irssi::settings_add_int('is_pd_bot', 'pagerduty_cache_size', 20);
 sub cmd_pagerduty_cache_dump {
     my ($data, $server, $wi) = @_;
 
     return unless chatnet_enabled($server);
+    my $server_tag = $server ? $server->{tag} : '';
 
     if (scalar(@PD_CACHE) == 0) {
         _wi_print($wi, 'Empty active PagerDuty incidents in cache, see ' . $pd_url);
@@ -133,12 +144,12 @@ sub cmd_pagerduty_cache_dump {
             _wi_print($wi, $pd_id . $status_str . ' - ' . $pd_url . $pd_id);
         }
     }
-    if (scalar(keys %THREAD_PD_MAP) > 0) {
+    if ($server_tag && exists $THREAD_PD_MAP{$server_tag} && scalar(keys %{$THREAD_PD_MAP{$server_tag}}) > 0) {
         _wi_print($wi, 'Mapped Threads:');
-        foreach my $t (sort keys %THREAD_PD_MAP) {
+        foreach my $t (sort keys %{$THREAD_PD_MAP{$server_tag}}) {
             my $col = thread_color($t);
             my $short_t = short_thread_id($t);
-            my $pd_id = $THREAD_PD_MAP{$t};
+            my $pd_id = $THREAD_PD_MAP{$server_tag}{$t};
             my $status_str = (exists $PD_STATUS{$pd_id} && length $PD_STATUS{$pd_id}) ? " ($PD_STATUS{$pd_id})" : "";
             _wi_print($wi, "  ${col}[${short_t}]\x0f -> $pd_id$status_str");
         }
@@ -157,6 +168,7 @@ sub signal_message_public {
     $pagerduty_channel = "#$pagerduty_channel" unless $pagerduty_channel =~ /^#/;
     return unless lc($target) eq lc($pagerduty_channel);
 
+    my $server_tag = $server->{tag};
     my $bot_nick = Irssi::settings_get_str('is_pd_bot_nick');
 
     if ((lc($target) eq lc($pagerduty_channel)) && (lc($nick) eq lc($bot_nick))) {
@@ -166,7 +178,7 @@ sub signal_message_public {
         # parent/thread msg. Ignore thread reply quotes so
         # quoted parent incidents don't re-enter the cache.
         my $clean_msg = $msg;
-        $clean_msg =~ s/\(re [^)]*\@${bot_nick}: (?:[^()]|\([^()]*\))*?\)//g;
+        $clean_msg =~ s/\(re (?>[^()]|(?<paren>\((?>[^()]|(?&paren))*\)))*?\@${bot_nick}: (?>[^()]|(?&paren))*\)//g;
 
         # Extract thread ID from message brackets if present
         my $tid;
@@ -193,14 +205,14 @@ sub signal_message_public {
         # Track pending incident ID from URL, table row, or wrapped bare ID
         if ($clean_msg =~ /(?:incidents\/|[🮇\|]\s*|^(?:\s*\[[^\]]+\])*\s*)(P[A-Z0-9]{6}|Q[A-Z0-9]{13})\b/ && $clean_msg !~ /Alert ID/) {
             $PENDING_PD_ID = $1;
-            set_thread_pd_map($tid, $PENDING_PD_ID);
+            set_thread_pd_map($server_tag, $tid, $PENDING_PD_ID);
         }
 
         # Clean up resolved PagerDuty incident from cache (same-line or wrapped table)
         if (($clean_msg =~ /(P[A-Z0-9]{6}|Q[A-Z0-9]{13})\s+.*✅ RESOLVED/) || ($PENDING_PD_ID && $clean_msg =~ /✅ RESOLVED/)) {
             my $resolved_id = $1 || $PENDING_PD_ID;
-            set_thread_pd_map($tid, $resolved_id);
-            if (grep { $_ eq $resolved_id } values %THREAD_PD_MAP) {
+            set_thread_pd_map($server_tag, $tid, $resolved_id);
+            if (is_pd_id_mapped($resolved_id)) {
                 $PD_STATUS{$resolved_id} = '✅ RESOLVED';
             } else {
                 delete $PD_STATUS{$resolved_id};
@@ -215,19 +227,19 @@ sub signal_message_public {
             }
         }
         # Match active PagerDuty incidents to populate cache (same-line or wrapped table)
-        elsif ($clean_msg =~ /(P[A-Z0-9]{6}|Q[A-Z0-9]{13})\s+.*(🚨 TRIGGERED|🆗 ACKNOWLEDGED|(?:‼|‼️|!!) UNACKNOWLEDGED|📤 ESCALATED|📥 (?:RE)?ASSIGNED|💤 SNOOZED)/) {
+        elsif ($clean_msg =~ /(P[A-Z0-9]{6}|Q[A-Z0-9]{13})\s+.*(🚨 TRIGGERED|🆗 ACKNOWLEDGED|(?:‼|‼️ |!!) UNACKNOWLEDGED|📤 ESCALATED|📥 (?:RE)?ASSIGNED|💤 SNOOZED)/) {
             $pd_id = $1;
             my $raw_status = $2;
             $PD_STATUS{$pd_id} = ($raw_status =~ /UNACKNOWLEDGED/) ? '‼️ UNACKNOWLEDGED' : $raw_status;
-            set_thread_pd_map($tid, $pd_id);
+            set_thread_pd_map($server_tag, $tid, $pd_id);
             $PENDING_PD_ID = undef;
             $PENDING_TID   = undef;
         }
-        elsif ($PENDING_PD_ID && $clean_msg =~ /(🚨 TRIGGERED|🆗 ACKNOWLEDGED|(?:‼|‼️|!!) UNACKNOWLEDGED|📤 ESCALATED|📥 (?:RE)?ASSIGNED|💤 SNOOZED)/) {
+        elsif ($PENDING_PD_ID && $clean_msg =~ /(🚨 TRIGGERED|🆗 ACKNOWLEDGED|(?:‼|‼️ |!!) UNACKNOWLEDGED|📤 ESCALATED|📥 (?:RE)?ASSIGNED|💤 SNOOZED)/) {
             $pd_id = $PENDING_PD_ID;
             my $raw_status = $1;
             $PD_STATUS{$pd_id} = ($raw_status =~ /UNACKNOWLEDGED/) ? '‼️ UNACKNOWLEDGED' : $raw_status;
-            set_thread_pd_map($tid, $pd_id);
+            set_thread_pd_map($server_tag, $tid, $pd_id);
             $PENDING_PD_ID = undef;
             $PENDING_TID   = undef;
         }
@@ -248,9 +260,9 @@ sub signal_message_public {
             # Store most recently seen PagerDuty incidents at the start.
             unshift(@PD_CACHE, $pd_id);
             # Remove last seen PagerDuty incidents if reached max. cache size.
-            if (scalar(@PD_CACHE) > Irssi::settings_get_int('pagerduty_cache_size')) {
+            if (scalar(@PD_CACHE) > Irssi::settings_get_int('is_pd_bot_pagerduty_cache_size')) {
                 my $popped = pop(@PD_CACHE);
-                if ($popped && !(grep { $_ eq $popped } values %THREAD_PD_MAP)) {
+                if ($popped && !is_pd_id_mapped($popped)) {
                     delete $PD_STATUS{$popped};
                 }
             }
@@ -283,15 +295,19 @@ sub signal_complete_word_pagerduty {
     if ($thread_id) {
         my $channel = (lc($window->{active}->{name}) eq lc($pagerduty_channel)) ? $window->{active}->{name} : $pagerduty_channel;
         my $target_tid = resolve_thread_id($channel, $thread_id);
+        my $server = $window->{active_server};
+        my $server_tag = $server ? $server->{tag} : '';
         my $mapped_id;
-        if (exists $THREAD_PD_MAP{$target_tid}) {
-            $mapped_id = $THREAD_PD_MAP{$target_tid};
-        } else {
-            my @matches = grep {
-                index($_, $target_tid) == 0 || index($target_tid, $_) == 0
-            } keys %THREAD_PD_MAP;
-            if (@matches == 1) {
-                $mapped_id = $THREAD_PD_MAP{$matches[0]};
+        if ($server_tag && exists $THREAD_PD_MAP{$server_tag}) {
+            if (exists $THREAD_PD_MAP{$server_tag}{$target_tid}) {
+                $mapped_id = $THREAD_PD_MAP{$server_tag}{$target_tid};
+            } else {
+                my @matches = grep {
+                    index($_, $target_tid) == 0 || index($target_tid, $_) == 0
+                } keys %{$THREAD_PD_MAP{$server_tag}};
+                if (@matches == 1) {
+                    $mapped_id = $THREAD_PD_MAP{$server_tag}{$matches[0]};
+                }
             }
         }
         if ($mapped_id && index(uc($mapped_id), uc($word)) == 0) {
@@ -333,19 +349,22 @@ sub cmd_pagerduty_cache_search {
     if ($thread_id) {
         my $channel = (lc($wi->{name}) eq lc($pagerduty_channel)) ? $wi->{name} : $pagerduty_channel;
         my $target_tid = resolve_thread_id($channel, $thread_id);
+        my $server_tag = $server ? $server->{tag} : '';
 
-        if (exists $THREAD_PD_MAP{$target_tid}) {
-            $pd_id = $THREAD_PD_MAP{$target_tid};
-        } else {
-            my @matches = grep {
-                index($_, $target_tid) == 0 || index($target_tid, $_) == 0
-            } keys %THREAD_PD_MAP;
+        if ($server_tag && exists $THREAD_PD_MAP{$server_tag}) {
+            if (exists $THREAD_PD_MAP{$server_tag}{$target_tid}) {
+                $pd_id = $THREAD_PD_MAP{$server_tag}{$target_tid};
+            } else {
+                my @matches = grep {
+                    index($_, $target_tid) == 0 || index($target_tid, $_) == 0
+                } keys %{$THREAD_PD_MAP{$server_tag}};
 
-            if (@matches == 1) {
-                $pd_id = $THREAD_PD_MAP{$matches[0]};
-            } elsif (@matches > 1) {
-                # Ambiguous prefix across mapped threads; leave input unchanged
-                return;
+                if (@matches == 1) {
+                    $pd_id = $THREAD_PD_MAP{$server_tag}{$matches[0]};
+                } elsif (@matches > 1) {
+                    # Ambiguous prefix across mapped threads; leave input unchanged
+                    return;
+                }
             }
         }
         return unless $pd_id;
