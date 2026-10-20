@@ -342,7 +342,7 @@ sub signal_message_public {
         # Track pending incident ID from URL, table row, or wrapped bare ID
         if ($clean_msg =~ /(?:incidents\/|[🮇\|]\s*|\b)(P[A-Z0-9]{6}|Q[A-Z0-9]{13})\b/ && $clean_msg !~ /Alert ID/) {
             if ($PENDING_PD_ID{$server_tag} && $PENDING_PD_ID{$server_tag} ne $1) {
-                $tid = $PENDING_TID{$server_tag} = $explicit_tid;
+                $tid = $PENDING_TID{$server_tag} = undef unless $explicit_tid;
                 delete $PENDING_SINCE{$server_tag};
             }
             $PENDING_PD_ID{$server_tag} = $1;
