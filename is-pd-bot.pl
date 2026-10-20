@@ -428,12 +428,15 @@ sub reset_pagerduty_search {
 }
 
 sub pagerduty_search_context_matches {
-    my ($window, $server, $input) = @_;
+    my ($window, $server, $input, $ctrl_c_pos) = @_;
     return 0 unless $PD_CACHE_SEARCH_ENABLED && $window && $server && $window->{active};
-    return $window->{refnum} == $PD_SEARCH_CONTEXT{window}
+    return 0 unless $window->{refnum} == $PD_SEARCH_CONTEXT{window}
         && $server->{tag} eq $PD_SEARCH_CONTEXT{server}
-        && $window->{active}->{name} eq $PD_SEARCH_CONTEXT{target}
-        && $input eq $PD_SEARCH_CONTEXT{input};
+        && $window->{active}->{name} eq $PD_SEARCH_CONTEXT{target};
+    return 1 if $input eq $PD_SEARCH_CONTEXT{input};
+    return defined($ctrl_c_pos) && $ctrl_c_pos > 0 && $ctrl_c_pos <= length($input)
+        && substr($input, $ctrl_c_pos - 1, 1) eq "\x03"
+        && (substr($input, 0, $ctrl_c_pos - 1) . substr($input, $ctrl_c_pos)) eq $PD_SEARCH_CONTEXT{input};
 }
 
 Irssi::signal_add('window changed', 'reset_pagerduty_search');
@@ -535,19 +538,17 @@ sub signal_gui_key_pressed {
 
     my $server = Irssi::active_server();
     my $input = Irssi::parse_special('$L');
-    my $ctrl_c_inserted = 0;
+    my $ctrl_c_pos = ($key == $KEY_CTRL_C) ? Irssi::gui_input_get_pos() : undef;
     # Irssi may already have inserted Ctrl+C before this last-priority handler.
-    if ($key == $KEY_CTRL_C && $input ne $PD_SEARCH_CONTEXT{input}) {
-        my $pos = Irssi::gui_input_get_pos();
-        if ($pos > 0 && substr($input, $pos - 1, 1) eq "\x03") {
-            substr($input, $pos - 1, 1, '');
-            $ctrl_c_inserted = 1;
-        }
-    }
     unless (chatnet_enabled($server)
-        && pagerduty_search_context_matches(Irssi::active_win(), $server, $input)) {
+        && pagerduty_search_context_matches(Irssi::active_win(), $server, $input, $ctrl_c_pos)) {
         reset_pagerduty_search();
         return;
+    }
+    my $ctrl_c_inserted = 0;
+    if (defined($ctrl_c_pos) && $input ne $PD_SEARCH_CONTEXT{input}) {
+        substr($input, $ctrl_c_pos - 1, 1, '');
+        $ctrl_c_inserted = 1;
     }
 
     if (($key == $KEY_RET) || ($key == $KEY_CTRL_U)) {
