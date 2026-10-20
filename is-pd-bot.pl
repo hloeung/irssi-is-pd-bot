@@ -57,20 +57,72 @@ sub _wi_print {
     }
 }
 
+sub resolve_thread_id {
+    my ($target, $id) = @_;
+    return $id unless defined $id && length $id;
+    $id =~ s/(?:…|\.\.\.)$//;
+    if (defined &Irssi::Script::matterircd_complete::msgthreadid_find) {
+        my $full = Irssi::Script::matterircd_complete::msgthreadid_find($target, $id);
+        return $full if defined $full && length $full;
+    } elsif (defined &Irssi::Script::Matterircd_Tab_Auto_Complete::msgthreadid_find) {
+        my $full = Irssi::Script::Matterircd_Tab_Auto_Complete::msgthreadid_find($target, $id);
+        return $full if defined $full && length $full;
+    }
+    return $id;
+}
+
 my @PD_CACHE;
 my $PENDING_PD_ID;
+my $PENDING_TID;
+my %THREAD_PD_MAP;
+my @THREAD_PD_ORDER;
+
+sub set_thread_pd_map {
+    my ($tid, $pd_id) = @_;
+    return unless $tid && $pd_id;
+    if (!exists $THREAD_PD_MAP{$tid}) {
+        push(@THREAD_PD_ORDER, $tid);
+        if (@THREAD_PD_ORDER > 50) {
+            delete $THREAD_PD_MAP{shift(@THREAD_PD_ORDER)};
+        }
+    }
+    $THREAD_PD_MAP{$tid} = $pd_id;
+}
+
 Irssi::settings_add_int('is_pd_bot', 'pagerduty_cache_size', 20);
+
+sub thread_color {
+    my ($id) = @_;
+    if (defined &Irssi::Script::matterircd_complete::thread_color) {
+        return Irssi::Script::matterircd_complete::thread_color($id);
+    } elsif (defined &Irssi::Script::Matterircd_Tab_Auto_Complete::thread_color) {
+        return Irssi::Script::Matterircd_Tab_Auto_Complete::thread_color($id);
+    }
+    # Fallback deterministic mIRC color if matterircd_complete is unavailable
+    my @colors = qw(03 04 06 07 09 10 11 12 13);
+    my $n = 0;
+    $n = ($n * 36 + ord($_)) % scalar(@colors) for split //, lc($id);
+    return "\x03" . $colors[$n];
+}
+
 sub cmd_pagerduty_cache_dump {
     my ($data, $server, $wi) = @_;
 
     return unless chatnet_enabled($server);
 
     if (scalar(@PD_CACHE) == 0) {
-        _wi_print($wi, 'Empty PagerDuty incidents in cache, see ' . $pd_url);
-        return;
+        _wi_print($wi, 'Empty active PagerDuty incidents in cache, see ' . $pd_url);
+    } else {
+        foreach my $pd_id (@PD_CACHE) {
+            _wi_print($wi, $pd_id . ' - ' . $pd_url . $pd_id);
+        }
     }
-    foreach my $pd_id (@PD_CACHE) {
-        _wi_print($wi, $pd_id . ' - ' . $pd_url . $pd_id);
+    if (scalar(keys %THREAD_PD_MAP) > 0) {
+        _wi_print($wi, 'Mapped Threads:');
+        foreach my $t (sort keys %THREAD_PD_MAP) {
+            my $col = thread_color($t);
+            _wi_print($wi, "  ${col}\@\@$t\x0f -> $THREAD_PD_MAP{$t}");
+        }
     }
 };
 Irssi::command_bind('pagerduty_cache_dump', 'cmd_pagerduty_cache_dump');
@@ -97,15 +149,31 @@ sub signal_message_public {
         my $clean_msg = $msg;
         $clean_msg =~ s/^\(re .*\@${bot_nick}: .*?\)\s*//;
 
+        # Extract thread ID from message brackets if present
+        my $tid;
+        if ($clean_msg =~ /\[(?:->|↪)?\@\@([0-9a-z]{1,26}|\$[0-9A-Za-z\-_\.]{1,43})/) {
+            $tid = $1;
+        } elsif ($clean_msg =~ /\[(?:->|↪)([0-9a-z]{1,25})(?:…|\.\.\.|[\],])/) {
+            $tid = $1;
+        } elsif ($clean_msg =~ /\[([0-9a-f]{3}|[0-9a-z]{1,25}(?:…|\.\.\.))\]/) {
+            $tid = $1;
+            $tid =~ s/(?:…|\.\.\.)$//;
+        }
+        $tid = resolve_thread_id($target, $tid) if $tid;
+        $PENDING_TID = $tid if $tid;
+
         # Track pending incident ID from URL or table row across wrapped lines
         if ($clean_msg =~ /(?:incidents\/|[🮇\|]\s*|\b)(P\w{6}|Q\w{13})\b/ && $clean_msg !~ /Alert ID/) {
             $PENDING_PD_ID = $1;
+            set_thread_pd_map($tid || $PENDING_TID, $PENDING_PD_ID);
         }
 
         # Clean up resolved PagerDuty incident from cache (same-line or wrapped table)
         if (($clean_msg =~ /(P\w{6}|Q\w{13})\s+.*✅ RESOLVED/) || ($PENDING_PD_ID && $clean_msg =~ /✅ RESOLVED/)) {
             my $resolved_id = $1 || $PENDING_PD_ID;
+            set_thread_pd_map($tid || $PENDING_TID, $resolved_id);
             $PENDING_PD_ID = undef;
+            $PENDING_TID   = undef;
             for my $i (0 .. $#PD_CACHE) {
                 if ($PD_CACHE[$i] && ($PD_CACHE[$i] eq $resolved_id)) {
                     splice(@PD_CACHE, $i, 1);
@@ -113,10 +181,12 @@ sub signal_message_public {
             }
         }
         # Match active PagerDuty incidents to populate cache (same-line or wrapped table)
-        elsif (($clean_msg =~ /(P\w{6}|Q\w{13})\s+.*(?:🚨 TRIGGERED|🆗 ACKNOWLEDGED|‼️ UNACKNOWLEDGED|📤 ESCALATED|📥 (?:RE)?ASSIGNED|💤 SNOOZED)/)
-            || ($PENDING_PD_ID && $clean_msg =~ /(?:🚨 TRIGGERED|🆗 ACKNOWLEDGED|‼️ UNACKNOWLEDGED|📤 ESCALATED|📥 (?:RE)?ASSIGNED|💤 SNOOZED)/)) {
+        elsif (($clean_msg =~ /(P\w{6}|Q\w{13})\s+.*(?:🚨 TRIGGERED|🆗 ACKNOWLEDGED|‼ UNACKNOWLEDGED|📤 ESCALATED|📥 (?:RE)?ASSIGNED|💤 SNOOZED)/)
+            || ($PENDING_PD_ID && $clean_msg =~ /(?:🚨 TRIGGERED|🆗 ACKNOWLEDGED|‼ UNACKNOWLEDGED|📤 ESCALATED|📥 (?:RE)?ASSIGNED|💤 SNOOZED)/)) {
             $pd_id = $1 || $PENDING_PD_ID;
+            set_thread_pd_map($tid || $PENDING_TID, $pd_id);
             $PENDING_PD_ID = undef;
+            $PENDING_TID   = undef;
         }
 
         if ($pd_id) {
@@ -170,23 +240,56 @@ sub cmd_pagerduty_cache_search {
 
     my $pagerduty_channel = Irssi::settings_get_str('is_pd_bot_pagerduty_channel');
     $pagerduty_channel = "#$pagerduty_channel" unless $pagerduty_channel =~ /^#/;
-    return unless ref $wi and ($wi->{type} eq 'CHANNEL' and lc($wi->{name}) eq lc($pagerduty_channel));
+    return unless ref $wi and (lc($wi->{name}) eq lc($pagerduty_channel) || $wi->{name} =~ /^@@/);
 
     return unless chatnet_enabled($server);
 
-    $PD_CACHE_SEARCH_ENABLED = 1;
-    my $pd_id = $PD_CACHE[$PD_CACHE_INDEX];
-    $PD_CACHE_INDEX += 1;
-    if ($PD_CACHE_INDEX > $#PD_CACHE) {
-        # Cycle back to the start.
-        $PD_CACHE_INDEX = 0;
+    my $pd_id;
+    my $input = Irssi::parse_special('$L');
+
+    # Check if in thread context (prompt starts with @@<id> or inside an @@<id> window)
+    my $thread_id;
+    if ($input =~ /^@@([0-9a-z]{1,26}|\$[0-9A-Za-z\-_\.]{1,43})/i) {
+        $thread_id = $1;
+    } elsif ($wi->{name} =~ /^@@([0-9a-z]{1,26}|\$[0-9A-Za-z\-_\.]{1,43})/i) {
+        $thread_id = $1;
+    }
+
+    if ($thread_id) {
+        my $channel = (lc($wi->{name}) eq lc($pagerduty_channel)) ? $wi->{name} : $pagerduty_channel;
+        my $full_tid = resolve_thread_id($channel, $thread_id);
+
+        if (exists $THREAD_PD_MAP{$full_tid}) {
+            $pd_id = $THREAD_PD_MAP{$full_tid};
+        } elsif (exists $THREAD_PD_MAP{$thread_id}) {
+            $pd_id = $THREAD_PD_MAP{$thread_id};
+        } else {
+            for my $t (keys %THREAD_PD_MAP) {
+                if (index($t, $thread_id) == 0) {
+                    $pd_id = $THREAD_PD_MAP{$t};
+                    last;
+                }
+            }
+        }
+    }
+
+    # If not in thread context or thread has no mapped incident, cycle active cache
+    if (!$pd_id && @PD_CACHE) {
+        $pd_id = $PD_CACHE[$PD_CACHE_INDEX];
+        $PD_CACHE_INDEX += 1;
+        if ($PD_CACHE_INDEX > $#PD_CACHE) {
+            # Cycle back to the start.
+            $PD_CACHE_INDEX = 0;
+        }
     }
 
     if ($pd_id) {
-        # Save input text.
-        my $input = Irssi::parse_special('$L');
-        # Remove previously inserted PagerDuty incident.
-        $input =~ s/(P\w{6}|Q\w{13})$//;
+        $PD_CACHE_SEARCH_ENABLED = 1;
+
+        # Remove previously inserted PagerDuty incident, or append with spacing
+        if (!($input =~ s/(P\w{6}|Q\w{13})$//) && $input =~ /\S$/) {
+            $input .= ' ';
+        }
 
         # Insert PagerDuty incident from cache.
         Irssi::gui_input_set_pos(0);
@@ -219,13 +322,13 @@ sub signal_gui_key_pressed {
 
     # Cancel/abort.
     elsif ($key == $KEY_CTRL_C) {
-        my $input = parse_special('$L');
+        my $input = Irssi::parse_special('$L');
 
         # Remove the Ctrl+C character.
         $input =~ tr/\x03//d;
 
         if ($PD_ADDED) {
-            my $pos = gui_input_get_pos();
+            my $pos = Irssi::gui_input_get_pos();
             if ($input =~ s/(P\w{6}|Q\w{13})$//) {
                 # 7 chars for P-ids, 14 chars for Q-ids
                 $pos -= length($1);
@@ -238,8 +341,8 @@ sub signal_gui_key_pressed {
             # Replace the text in the input box with our modified
             # version, then move cursor positon to where it was
             # without the inserted PagerDuty incident.
-            gui_input_set($input);
-            gui_input_set_pos($pos);
+            Irssi::gui_input_set($input);
+            Irssi::gui_input_set_pos($pos);
         }
 
         $PD_ADDED = 0;
