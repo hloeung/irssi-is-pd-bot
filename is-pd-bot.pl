@@ -107,6 +107,7 @@ my %PD_STATUS;
 sub set_thread_pd_map {
     my ($tid, $pd_id) = @_;
     return unless $tid && $pd_id;
+    $THREAD_PD_MAP{$tid} = $pd_id;
     @THREAD_PD_ORDER = grep { $_ ne $tid } @THREAD_PD_ORDER;
     push(@THREAD_PD_ORDER, $tid);
     if (@THREAD_PD_ORDER > 50) {
@@ -116,7 +117,6 @@ sub set_thread_pd_map {
             delete $PD_STATUS{$old_pd_id};
         }
     }
-    $THREAD_PD_MAP{$tid} = $pd_id;
 }
 
 Irssi::settings_add_int('is_pd_bot', 'pagerduty_cache_size', 20);
@@ -166,7 +166,7 @@ sub signal_message_public {
         # parent/thread msg. Ignore thread reply quotes so
         # quoted parent incidents don't re-enter the cache.
         my $clean_msg = $msg;
-        $clean_msg =~ s/\(re [^)]*\@${bot_nick}: .*?\)//g;
+        $clean_msg =~ s/\(re [^)]*\@${bot_nick}: (?:[^()]|\([^()]*\))*?\)//g;
 
         # Extract thread ID from message brackets if present
         my $tid;
@@ -180,17 +180,18 @@ sub signal_message_public {
         }
         $tid = resolve_thread_id($target, $tid) if $tid;
 
-        # Clear pending incident when explicit thread changes
-        if ($tid) {
-            if ($PENDING_TID && $tid ne $PENDING_TID) {
-                $PENDING_PD_ID = undef;
-            }
-            $PENDING_TID = $tid;
+        # Clear pending continuation if thread context changes
+        if ($PENDING_TID && (!defined($tid) || $tid ne $PENDING_TID)) {
+            $PENDING_PD_ID = undef;
+            $PENDING_TID   = undef;
+        } elsif (!defined($PENDING_TID) && defined($tid)) {
+            $PENDING_PD_ID = undef;
         }
 
         # Track pending incident ID from URL, table row, or wrapped bare ID
         if ($clean_msg =~ /(?:incidents\/|[🮇\|]\s*|^(?:\s*\[[^\]]+\])*\s*)(P[A-Z0-9]{6}|Q[A-Z0-9]{13})\b/ && $clean_msg !~ /Alert ID/) {
             $PENDING_PD_ID = $1;
+            $PENDING_TID   = $tid;
             set_thread_pd_map($tid, $PENDING_PD_ID);
         }
 
@@ -203,6 +204,7 @@ sub signal_message_public {
             for my $i (0 .. $#PD_CACHE) {
                 if ($PD_CACHE[$i] && ($PD_CACHE[$i] eq $resolved_id)) {
                     splice(@PD_CACHE, $i, 1);
+                    last;
                 }
             }
             if (grep { $_ eq $resolved_id } values %THREAD_PD_MAP) {
@@ -220,6 +222,7 @@ sub signal_message_public {
             for my $i (0 .. $#PD_CACHE) {
                 if ($PD_CACHE[$i] && ($PD_CACHE[$i] eq $resolved_id)) {
                     splice(@PD_CACHE, $i, 1);
+                    last;
                 }
             }
             if (grep { $_ eq $resolved_id } values %THREAD_PD_MAP) {
@@ -231,14 +234,16 @@ sub signal_message_public {
         # Match active PagerDuty incidents to populate cache (same-line or wrapped table)
         elsif ($clean_msg =~ /(P[A-Z0-9]{6}|Q[A-Z0-9]{13})\s+.*(🚨 TRIGGERED|🆗 ACKNOWLEDGED|(?:‼|‼️|!!) UNACKNOWLEDGED|📤 ESCALATED|📥 (?:RE)?ASSIGNED|💤 SNOOZED)/) {
             $pd_id = $1;
-            $PD_STATUS{$pd_id} = ($2 =~ /UNACKNOWLEDGED/) ? '‼ UNACKNOWLEDGED' : $2;
+            my $raw_status = $2;
+            $PD_STATUS{$pd_id} = ($raw_status =~ /UNACKNOWLEDGED/) ? '‼️ UNACKNOWLEDGED' : $raw_status;
             set_thread_pd_map($tid, $pd_id);
             $PENDING_PD_ID = undef;
             $PENDING_TID   = undef;
         }
         elsif ($PENDING_PD_ID && $clean_msg =~ /(🚨 TRIGGERED|🆗 ACKNOWLEDGED|(?:‼|‼️|!!) UNACKNOWLEDGED|📤 ESCALATED|📥 (?:RE)?ASSIGNED|💤 SNOOZED)/) {
             $pd_id = $PENDING_PD_ID;
-            $PD_STATUS{$pd_id} = ($1 =~ /UNACKNOWLEDGED/) ? '‼ UNACKNOWLEDGED' : $1;
+            my $raw_status = $1;
+            $PD_STATUS{$pd_id} = ($raw_status =~ /UNACKNOWLEDGED/) ? '‼️ UNACKNOWLEDGED' : $raw_status;
             my $map_tid = $tid || $PENDING_TID;
             set_thread_pd_map($map_tid, $pd_id);
             $PENDING_PD_ID = undef;
@@ -255,6 +260,7 @@ sub signal_message_public {
             for my $i (0 .. $#PD_CACHE) {
                 if ($PD_CACHE[$i] && ($PD_CACHE[$i] eq $pd_id)) {
                     splice(@PD_CACHE, $i, 1);
+                    last;
                 }
             }
             # Store most recently seen PagerDuty incidents at the start.
@@ -321,6 +327,7 @@ Irssi::signal_add_last('complete word', 'signal_complete_word_pagerduty');
 
 my $PD_CACHE_SEARCH_ENABLED = 0;
 my $PD_ADDED = 0;
+my $PD_SEPARATOR_ADDED = 0;
 sub cmd_pagerduty_cache_search {
     my ($data, $server, $wi) = @_;
 
@@ -375,9 +382,14 @@ sub cmd_pagerduty_cache_search {
     if ($pd_id) {
         $PD_CACHE_SEARCH_ENABLED = 1;
 
+        if (!$PD_ADDED) {
+            $PD_SEPARATOR_ADDED = 0;
+        }
+
         # Replace previously inserted standalone PagerDuty incident, or append with spacing
-        if (!($input =~ s/(^|\s)(P[A-Z0-9]{6}|Q[A-Z0-9]{13})$/${1}${pd_id}/)) {
-            $input .= ' ' if $input =~ /\S$/;
+        if (!($input =~ s/(P[A-Z0-9]{6}|Q[A-Z0-9]{13})$/${pd_id}/)) {
+            $PD_SEPARATOR_ADDED = ($input =~ /\S$/) ? 1 : 0;
+            $input .= ' ' if $PD_SEPARATOR_ADDED;
             $input .= $pd_id;
         }
 
@@ -406,6 +418,7 @@ sub signal_gui_key_pressed {
 
     if (($key == $KEY_RET) || ($key == $KEY_CTRL_U)) {
         $PD_ADDED = 0;
+        $PD_SEPARATOR_ADDED = 0;
         $PD_CACHE_INDEX = 0;
         $PD_CACHE_SEARCH_ENABLED = 0;
     }
@@ -419,9 +432,14 @@ sub signal_gui_key_pressed {
 
         if ($PD_ADDED) {
             my $pos = Irssi::gui_input_get_pos();
-            if ($input =~ s/(^|\s)(P[A-Z0-9]{6}|Q[A-Z0-9]{13})$//) {
-                # 7 chars for P-ids, 14 chars for Q-ids + any leading whitespace
-                $pos -= length($1 . $2);
+            if ($PD_SEPARATOR_ADDED) {
+                if ($input =~ s/\s(P[A-Z0-9]{6}|Q[A-Z0-9]{13})$//) {
+                    $pos -= length($1) + 1;
+                }
+            } else {
+                if ($input =~ s/(P[A-Z0-9]{6}|Q[A-Z0-9]{13})$//) {
+                    $pos -= length($1);
+                }
             }
 
             # We also want to move the input position back one for
@@ -436,6 +454,7 @@ sub signal_gui_key_pressed {
         }
 
         $PD_ADDED = 0;
+        $PD_SEPARATOR_ADDED = 0;
         $PD_CACHE_INDEX = 0;
         $PD_CACHE_SEARCH_ENABLED = 0;
     }
