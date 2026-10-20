@@ -119,6 +119,12 @@ my %THREAD_PD_MAP;
 my %THREAD_PD_ORDER;
 my %PD_STATUS;
 
+sub is_canonical_tid {
+    my ($tid) = @_;
+    return 0 unless defined $tid && length $tid;
+    return (length($tid) == 26 || $tid =~ /^\$/ || $tid =~ /^[0-9a-f]{3}$/) ? 1 : 0;
+}
+
 sub is_pd_id_mapped {
     my ($id) = @_;
     return 0 unless defined $id;
@@ -152,13 +158,17 @@ sub find_thread_pd_id {
     return undef unless $server_tag && defined($target_tid) && length($target_tid);
     return undef unless exists $THREAD_PD_MAP{$server_tag};
 
-    my $is_canonical = (length($target_tid) == 26 || $target_tid =~ /^\$/ || $target_tid =~ /^[0-9a-f]{3}$/);
-    if ($is_canonical && exists $THREAD_PD_MAP{$server_tag}{$target_tid}) {
+    # Exact match on stored key (full/canonical or existing)
+    if (exists $THREAD_PD_MAP{$server_tag}{$target_tid}) {
         return $THREAD_PD_MAP{$server_tag}{$target_tid};
     }
 
+    # If target_tid is already canonical, do not prefix-match other threads
+    return undef if is_canonical_tid($target_tid);
+
+    # Unresolved short ID fallback: prefix match against stored full keys
     my @matches = grep {
-        index($_, $target_tid) == 0 || index($target_tid, $_) == 0
+        index($_, $target_tid) == 0
     } keys %{$THREAD_PD_MAP{$server_tag}};
 
     my %unique_pds = map { $THREAD_PD_MAP{$server_tag}{$_} => 1 } @matches;
@@ -171,6 +181,17 @@ sub set_thread_pd_map {
     my ($server_tag, $tid, $pd_id) = @_;
     return unless $server_tag && $tid && $pd_id;
     my $prev_pd_id = $THREAD_PD_MAP{$server_tag}{$tid};
+
+    # If tid is canonical, upgrade any unexpanded shorter prefix stored for this incident
+    if (is_canonical_tid($tid) && exists $THREAD_PD_MAP{$server_tag}) {
+        for my $k (keys %{$THREAD_PD_MAP{$server_tag}}) {
+            if ($k ne $tid && index($tid, $k) == 0 && $THREAD_PD_MAP{$server_tag}{$k} eq $pd_id) {
+                delete $THREAD_PD_MAP{$server_tag}{$k};
+                @{$THREAD_PD_ORDER{$server_tag}} = grep { $_ ne $k } @{$THREAD_PD_ORDER{$server_tag}};
+            }
+        }
+    }
+
     $THREAD_PD_MAP{$server_tag}{$tid} = $pd_id;
     # Maintain LRU ordering
     @{$THREAD_PD_ORDER{$server_tag}} = grep { $_ ne $tid } @{$THREAD_PD_ORDER{$server_tag} // []};
