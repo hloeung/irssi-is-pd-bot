@@ -128,6 +128,25 @@ sub is_pd_id_mapped {
     return 0;
 }
 
+sub is_thread_alias {
+    my ($server_tag, $tid1, $tid2) = @_;
+    return 1 if $tid1 eq $tid2;
+
+    if (index($tid1, $tid2) == 0 || index($tid2, $tid1) == 0) {
+        my $short = (length($tid1) < length($tid2)) ? $tid1 : $tid2;
+
+        if ($server_tag && exists $THREAD_PD_MAP{$server_tag}) {
+            my @matches = grep {
+                index($_, $short) == 0 || index($short, $_) == 0
+            } keys %{$THREAD_PD_MAP{$server_tag}};
+            my %unique_pds = map { $THREAD_PD_MAP{$server_tag}{$_} => 1 } @matches;
+            return 0 if keys %unique_pds > 1;
+        }
+        return 1;
+    }
+    return 0;
+}
+
 sub find_thread_pd_id {
     my ($server_tag, $target_tid) = @_;
     return undef unless $server_tag && defined($target_tid) && length($target_tid);
@@ -246,8 +265,16 @@ sub signal_message_public {
         $tid = resolve_thread_id($target, $tid) if $tid;
 
         # Clear pending continuation if explicit thread context changes; carry pending thread on untagged continuations
-        if ($PENDING_TID{$server_tag} && defined($tid) && $tid ne $PENDING_TID{$server_tag}) {
-            $PENDING_PD_ID{$server_tag} = undef;
+        if ($PENDING_TID{$server_tag} && defined($tid)) {
+            if (is_thread_alias($server_tag, $tid, $PENDING_TID{$server_tag})) {
+                if (length($tid) > length($PENDING_TID{$server_tag})) {
+                    $PENDING_TID{$server_tag} = $tid;
+                } else {
+                    $tid = $PENDING_TID{$server_tag};
+                }
+            } else {
+                $PENDING_PD_ID{$server_tag} = undef;
+            }
         }
         if ($tid) {
             $PENDING_TID{$server_tag} = $tid;
