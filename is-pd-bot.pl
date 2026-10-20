@@ -107,7 +107,6 @@ my %PD_STATUS;
 sub set_thread_pd_map {
     my ($tid, $pd_id) = @_;
     return unless $tid && $pd_id;
-    $THREAD_PD_MAP{$tid} = $pd_id;
     @THREAD_PD_ORDER = grep { $_ ne $tid } @THREAD_PD_ORDER;
     push(@THREAD_PD_ORDER, $tid);
     if (@THREAD_PD_ORDER > 50) {
@@ -117,6 +116,7 @@ sub set_thread_pd_map {
             delete $PD_STATUS{$old_pd_id};
         }
     }
+    $THREAD_PD_MAP{$tid} = $pd_id;
 }
 
 Irssi::settings_add_int('is_pd_bot', 'pagerduty_cache_size', 20);
@@ -180,25 +180,31 @@ sub signal_message_public {
         }
         $tid = resolve_thread_id($target, $tid) if $tid;
 
-        # Clear pending continuation if thread context changes
-        if ($PENDING_TID && (!defined($tid) || $tid ne $PENDING_TID)) {
+        # Clear pending continuation if explicit thread context changes; carry pending thread on untagged continuations
+        if ($PENDING_TID && defined($tid) && $tid ne $PENDING_TID) {
             $PENDING_PD_ID = undef;
-            $PENDING_TID   = undef;
-        } elsif (!defined($PENDING_TID) && defined($tid)) {
-            $PENDING_PD_ID = undef;
+        }
+        if ($tid) {
+            $PENDING_TID = $tid;
+        } else {
+            $tid = $PENDING_TID;
         }
 
         # Track pending incident ID from URL, table row, or wrapped bare ID
         if ($clean_msg =~ /(?:incidents\/|[🮇\|]\s*|^(?:\s*\[[^\]]+\])*\s*)(P[A-Z0-9]{6}|Q[A-Z0-9]{13})\b/ && $clean_msg !~ /Alert ID/) {
             $PENDING_PD_ID = $1;
-            $PENDING_TID   = $tid;
             set_thread_pd_map($tid, $PENDING_PD_ID);
         }
 
         # Clean up resolved PagerDuty incident from cache (same-line or wrapped table)
-        if ($clean_msg =~ /(P[A-Z0-9]{6}|Q[A-Z0-9]{13})\s+.*✅ RESOLVED/) {
-            my $resolved_id = $1;
+        if (($clean_msg =~ /(P[A-Z0-9]{6}|Q[A-Z0-9]{13})\s+.*✅ RESOLVED/) || ($PENDING_PD_ID && $clean_msg =~ /✅ RESOLVED/)) {
+            my $resolved_id = $1 || $PENDING_PD_ID;
             set_thread_pd_map($tid, $resolved_id);
+            if (grep { $_ eq $resolved_id } values %THREAD_PD_MAP) {
+                $PD_STATUS{$resolved_id} = '✅ RESOLVED';
+            } else {
+                delete $PD_STATUS{$resolved_id};
+            }
             $PENDING_PD_ID = undef;
             $PENDING_TID   = undef;
             for my $i (0 .. $#PD_CACHE) {
@@ -206,29 +212,6 @@ sub signal_message_public {
                     splice(@PD_CACHE, $i, 1);
                     last;
                 }
-            }
-            if (grep { $_ eq $resolved_id } values %THREAD_PD_MAP) {
-                $PD_STATUS{$resolved_id} = '✅ RESOLVED';
-            } else {
-                delete $PD_STATUS{$resolved_id};
-            }
-        }
-        elsif ($PENDING_PD_ID && $clean_msg =~ /✅ RESOLVED/) {
-            my $resolved_id = $PENDING_PD_ID;
-            my $map_tid = $tid || $PENDING_TID;
-            set_thread_pd_map($map_tid, $resolved_id);
-            $PENDING_PD_ID = undef;
-            $PENDING_TID   = undef;
-            for my $i (0 .. $#PD_CACHE) {
-                if ($PD_CACHE[$i] && ($PD_CACHE[$i] eq $resolved_id)) {
-                    splice(@PD_CACHE, $i, 1);
-                    last;
-                }
-            }
-            if (grep { $_ eq $resolved_id } values %THREAD_PD_MAP) {
-                $PD_STATUS{$resolved_id} = '✅ RESOLVED';
-            } else {
-                delete $PD_STATUS{$resolved_id};
             }
         }
         # Match active PagerDuty incidents to populate cache (same-line or wrapped table)
@@ -244,8 +227,7 @@ sub signal_message_public {
             $pd_id = $PENDING_PD_ID;
             my $raw_status = $1;
             $PD_STATUS{$pd_id} = ($raw_status =~ /UNACKNOWLEDGED/) ? '‼️ UNACKNOWLEDGED' : $raw_status;
-            my $map_tid = $tid || $PENDING_TID;
-            set_thread_pd_map($map_tid, $pd_id);
+            set_thread_pd_map($tid, $pd_id);
             $PENDING_PD_ID = undef;
             $PENDING_TID   = undef;
         }
@@ -275,7 +257,7 @@ sub signal_message_public {
         }
     }
 };
-Irssi::signal_add_last('message public', 'signal_message_public');
+Irssi::signal_add_first('message public', 'signal_message_public');
 
 # Tab auto-completion for PagerDuty incident IDs in cache
 sub signal_complete_word_pagerduty {
