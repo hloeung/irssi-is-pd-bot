@@ -27,15 +27,18 @@ Irssi::settings_add_int('is_pd_bot', 'pagerduty_cache_size', -1);
 
 sub get_pagerduty_cache_size {
     my $legacy = Irssi::settings_get_int('pagerduty_cache_size');
+    return $legacy if defined($legacy) && $legacy > 0;
     my $new    = Irssi::settings_get_int('is_pd_bot_pagerduty_cache_size');
-    return $legacy if defined($legacy) && $legacy > 0 && (!defined($new) || $new == 20);
     return (defined($new) && $new > 0) ? $new : 20;
 }
 
 # Migrate legacy setting if customized
 my $legacy_cache_size = Irssi::settings_get_int('pagerduty_cache_size');
-if ($legacy_cache_size > 0 && Irssi::settings_get_int('is_pd_bot_pagerduty_cache_size') == 20) {
-    Irssi::settings_set_int('is_pd_bot_pagerduty_cache_size', $legacy_cache_size);
+if ($legacy_cache_size > 0) {
+    if (Irssi::settings_get_int('is_pd_bot_pagerduty_cache_size') == 20) {
+        Irssi::settings_set_int('is_pd_bot_pagerduty_cache_size', $legacy_cache_size);
+    }
+    Irssi::settings_set_int('pagerduty_cache_size', -1);
 }
 
 # Cached chatnet check (from matterircd_complete.pl)
@@ -122,7 +125,7 @@ my %PD_STATUS;
 sub is_canonical_tid {
     my ($tid) = @_;
     return 0 unless defined $tid && length $tid;
-    return (length($tid) == 26 || $tid =~ /^\$[0-9A-Za-z\-_\.]{43}$/ || $tid =~ /^[0-9a-f]{3}$/) ? 1 : 0;
+    return ($tid =~ /^[0-9a-z]{26}$/ || $tid =~ /^\$[0-9A-Za-z\-_\.]{43}$/ || $tid =~ /^[0-9a-f]{3}$/) ? 1 : 0;
 }
 
 sub is_pd_id_mapped {
