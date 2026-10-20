@@ -117,6 +117,7 @@ sub short_thread_id {
 my %PD_CACHE;
 my %PENDING_PD_ID;
 my %PENDING_TID;
+my %PENDING_SINCE;
 my %THREAD_PD_MAP;
 my %THREAD_PD_ORDER;
 my %PD_STATUS;
@@ -124,7 +125,7 @@ my %PD_STATUS;
 sub is_canonical_tid {
     my ($tid) = @_;
     return 0 unless defined $tid && length $tid;
-    return ($tid =~ /^[0-9a-z]{26}$/ || $tid =~ /^\$[0-9A-Za-z\-_\.]{43}$/ || $tid =~ /^[0-9a-f]{3}$/) ? 1 : 0;
+    return ($tid =~ /^[0-9a-z]{26}$/ || $tid =~ /^\$[0-9A-Za-z\-_\.]{43}$/) ? 1 : 0;
 }
 
 sub is_pd_id_mapped {
@@ -285,6 +286,18 @@ sub signal_message_public {
             $tid =~ s/(?:…|\.\.\.)$//;
         }
         $tid = resolve_thread_id($target, $tid) if $tid;
+        my $explicit_tid = $tid;
+
+        # Wrapped lines must arrive promptly; unrelated posts must not inherit stale context.
+        if (exists $PENDING_SINCE{$server_tag} && time - $PENDING_SINCE{$server_tag} > 30) {
+            $PENDING_PD_ID{$server_tag} = undef;
+            $PENDING_TID{$server_tag} = undef;
+            delete $PENDING_SINCE{$server_tag};
+        }
+        if ($tid && !$PENDING_TID{$server_tag}) {
+            $PENDING_PD_ID{$server_tag} = undef;
+            delete $PENDING_SINCE{$server_tag};
+        }
 
         # Clear pending continuation if explicit thread context changes; carry pending thread on untagged continuations
         if ($PENDING_TID{$server_tag} && defined($tid)) {
@@ -296,6 +309,7 @@ sub signal_message_public {
                 }
             } else {
                 $PENDING_PD_ID{$server_tag} = undef;
+                delete $PENDING_SINCE{$server_tag};
             }
         }
         if ($tid) {
@@ -306,6 +320,10 @@ sub signal_message_public {
 
         # Track pending incident ID from URL, table row, or wrapped bare ID
         if ($clean_msg =~ /(?:incidents\/|[🮇\|]\s*|\b)(P[A-Z0-9]{6}|Q[A-Z0-9]{13})\b/ && $clean_msg !~ /Alert ID/) {
+            if ($PENDING_PD_ID{$server_tag} && $PENDING_PD_ID{$server_tag} ne $1) {
+                $tid = $PENDING_TID{$server_tag} = $explicit_tid;
+                delete $PENDING_SINCE{$server_tag};
+            }
             $PENDING_PD_ID{$server_tag} = $1;
             set_thread_pd_map($server_tag, $tid, $PENDING_PD_ID{$server_tag});
         }
@@ -345,6 +363,12 @@ sub signal_message_public {
             set_thread_pd_map($server_tag, $tid, $pd_id);
             $PENDING_PD_ID{$server_tag} = undef;
             $PENDING_TID{$server_tag}   = undef;
+        }
+
+        if ($PENDING_PD_ID{$server_tag} || $PENDING_TID{$server_tag}) {
+            $PENDING_SINCE{$server_tag} //= time;
+        } else {
+            delete $PENDING_SINCE{$server_tag};
         }
 
         if ($pd_id) {
