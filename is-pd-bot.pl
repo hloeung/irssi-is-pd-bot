@@ -20,7 +20,6 @@ our %IRSSI = (
 Irssi::settings_add_str('matterircd_complete', 'matterircd_complete_networks', '');
 Irssi::settings_add_str('is_pd_bot', 'is_pd_bot_nick', 'is-pd-bot');
 Irssi::settings_add_str('is_pd_bot', 'is_pd_bot_pagerduty_channel', 'is-pagerduty');
-Irssi::settings_add_str('is_pd_bot', 'is_pd_bot_outage_channel', 'is-outage');
 # Noisy bots sharing the same outage channel.
 Irssi::settings_add_str('is_pd_bot', 'is_pd_bot_noisy_bots', 'webbot');
 
@@ -77,9 +76,7 @@ sub signal_message_public {
 
     my $pagerduty_channel = Irssi::settings_get_str('is_pd_bot_pagerduty_channel');
     $pagerduty_channel = "#$pagerduty_channel" unless $pagerduty_channel =~ /^#/;
-    my $outage_channel = Irssi::settings_get_str('is_pd_bot_outage_channel');
-    $outage_channel = "#$outage_channel" unless $outage_channel =~ /^#/;
-    return unless (lc($target) eq lc($pagerduty_channel)) || (lc($target) eq lc($outage_channel));
+    return unless lc($target) eq lc($pagerduty_channel);
 
     my $bot_nick = Irssi::settings_get_str('is_pd_bot_nick');
     my @noisy_bots = split(/\s+/, Irssi::settings_get_str('is_pd_bot_noisy_bots'));
@@ -133,21 +130,6 @@ sub signal_message_public {
             if (scalar(@PD_CACHE) > Irssi::settings_get_int('pagerduty_cache_size')) {
                 pop(@PD_CACHE);
             }
-        }
-    }
-
-    elsif (lc($target) eq lc($outage_channel)) {
-        # We can't match on begin with (^) so threaded replies are
-        # also colourised.
-        $msg =~ s/🚨 Incident/\x02\x0307🚨\x0f Incident/;
-        $msg =~ s/✅ Incident/\x02\x0303✅\x0f Incident/;
-        if (lc($nick) eq lc($bot_nick)) {
-            $msg =~ s/taking a look\./\x02\x0307taking a look\x0f./;
-            $msg =~ s/now resolved\./\x02\x0303now resolved\x0f./;
-        }
-
-        elsif (grep { lc($nick) eq lc($_) } @noisy_bots) {
-            $msg =~ s/^\[/\x0314[/;
         }
     }
 
@@ -239,7 +221,7 @@ sub signal_gui_key_pressed {
         my $input = parse_special('$L');
 
         # Remove the Ctrl+C character.
-        $input =~ tr///d;
+        $input =~ tr/\x03//d;
 
         if ($PD_ADDED) {
             my $pos = gui_input_get_pos();
