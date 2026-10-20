@@ -119,7 +119,7 @@ sub find_thread_pd_id {
     return undef unless $server_tag && defined($target_tid) && length($target_tid);
     return undef unless exists $THREAD_PD_MAP{$server_tag};
 
-    my $is_canonical = (length($target_tid) == 26 || $target_tid =~ /^\$/);
+    my $is_canonical = (length($target_tid) == 26 || $target_tid =~ /^\$/ || $target_tid =~ /^[0-9a-f]{3}$/);
     if ($is_canonical && exists $THREAD_PD_MAP{$server_tag}{$target_tid}) {
         return $THREAD_PD_MAP{$server_tag}{$target_tid};
     }
@@ -128,7 +128,10 @@ sub find_thread_pd_id {
         index($_, $target_tid) == 0 || index($target_tid, $_) == 0
     } keys %{$THREAD_PD_MAP{$server_tag}};
 
-    return (@matches == 1) ? $THREAD_PD_MAP{$server_tag}{$matches[0]} : undef;
+    my %unique_pds = map { $THREAD_PD_MAP{$server_tag}{$_} => 1 } @matches;
+    my @pds = keys %unique_pds;
+
+    return (@pds == 1) ? $pds[0] : undef;
 }
 
 sub set_thread_pd_map {
