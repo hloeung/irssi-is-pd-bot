@@ -114,6 +114,23 @@ sub is_pd_id_mapped {
     return 0;
 }
 
+sub find_thread_pd_id {
+    my ($server_tag, $target_tid) = @_;
+    return undef unless $server_tag && defined($target_tid) && length($target_tid);
+    return undef unless exists $THREAD_PD_MAP{$server_tag};
+
+    my $is_canonical = (length($target_tid) == 26 || $target_tid =~ /^\$/);
+    if ($is_canonical && exists $THREAD_PD_MAP{$server_tag}{$target_tid}) {
+        return $THREAD_PD_MAP{$server_tag}{$target_tid};
+    }
+
+    my @matches = grep {
+        index($_, $target_tid) == 0 || index($target_tid, $_) == 0
+    } keys %{$THREAD_PD_MAP{$server_tag}};
+
+    return (@matches == 1) ? $THREAD_PD_MAP{$server_tag}{$matches[0]} : undef;
+}
+
 sub set_thread_pd_map {
     my ($server_tag, $tid, $pd_id) = @_;
     return unless $server_tag && $tid && $pd_id;
@@ -140,14 +157,6 @@ sub cmd_pagerduty_cache_dump {
     return unless chatnet_enabled($server);
     my $server_tag = $server ? $server->{tag} : '';
 
-    if (scalar(@PD_CACHE) == 0) {
-        _wi_print($wi, 'Empty active PagerDuty incidents in cache, see ' . $pd_url);
-    } else {
-        foreach my $pd_id (@PD_CACHE) {
-            my $status_str = (exists $PD_STATUS{$pd_id} && length $PD_STATUS{$pd_id}) ? " ($PD_STATUS{$pd_id})" : "";
-            _wi_print($wi, $pd_id . $status_str . ' - ' . $pd_url . $pd_id);
-        }
-    }
     if ($server_tag && exists $THREAD_PD_MAP{$server_tag} && scalar(keys %{$THREAD_PD_MAP{$server_tag}}) > 0) {
         _wi_print($wi, 'Mapped Threads:');
         foreach my $t (sort keys %{$THREAD_PD_MAP{$server_tag}}) {
@@ -160,6 +169,23 @@ sub cmd_pagerduty_cache_dump {
     }
 };
 Irssi::command_bind('pagerduty_cache_dump', 'cmd_pagerduty_cache_dump');
+
+sub cmd_pagerduty_cache_dump_active {
+    my ($data, $server, $wi) = @_;
+
+    return unless chatnet_enabled($server);
+    my $server_tag = $server ? $server->{tag} : '';
+
+    if (scalar(@PD_CACHE) == 0) {
+        _wi_print($wi, 'Empty active PagerDuty incidents in cache, see ' . $pd_url);
+    } else {
+        foreach my $pd_id (@PD_CACHE) {
+            my $status_str = (exists $PD_STATUS{$pd_id} && length $PD_STATUS{$pd_id}) ? " ($PD_STATUS{$pd_id})" : "";
+            _wi_print($wi, $pd_id . $status_str . ' - ' . $pd_url . $pd_id);
+        }
+    }
+};
+Irssi::command_bind('pagerduty_cache_dump_active', 'cmd_pagerduty_cache_dump_active');
 
 my $PD_CACHE_INDEX = 0;
 
@@ -182,7 +208,11 @@ sub signal_message_public {
         # parent/thread msg. Ignore thread reply quotes so
         # quoted parent incidents don't re-enter the cache.
         my $clean_msg = $msg;
+        $clean_msg =~ s/\x03(?:\d{1,2}(?:,\d{1,2})?)?//g;
+        $clean_msg =~ s/[\x02\x0f\x16\x1d\x1f]//g;
+        $clean_msg =~ s/(?:\xc2\xa0|\x{a0})/ /g;
         $clean_msg =~ s/\(re (?>[^()]|(?<paren>\((?>[^()]|(?&paren))*\)))*?\@${bot_nick}: (?>[^()]|(?&paren))*\)//g;
+        $clean_msg =~ s/\(re [^)]*?\@${bot_nick}: .*?\)//g;
 
         # Extract thread ID from message brackets if present
         my $tid;
@@ -296,24 +326,13 @@ sub signal_complete_word_pagerduty {
     } elsif ($window->{active}->{name} =~ /^@@([0-9a-z]{1,26}|\$[0-9A-Za-z\-_\.]{1,43})/i) {
         $thread_id = $1;
     }
+
     if ($thread_id) {
         my $channel = (lc($window->{active}->{name}) eq lc($pagerduty_channel)) ? $window->{active}->{name} : $pagerduty_channel;
         my $target_tid = resolve_thread_id($channel, $thread_id);
         my $server = $window->{active_server};
         my $server_tag = $server ? $server->{tag} : '';
-        my $mapped_id;
-        if ($server_tag && exists $THREAD_PD_MAP{$server_tag}) {
-            if (exists $THREAD_PD_MAP{$server_tag}{$target_tid}) {
-                $mapped_id = $THREAD_PD_MAP{$server_tag}{$target_tid};
-            } else {
-                my @matches = grep {
-                    index($_, $target_tid) == 0 || index($target_tid, $_) == 0
-                } keys %{$THREAD_PD_MAP{$server_tag}};
-                if (@matches == 1) {
-                    $mapped_id = $THREAD_PD_MAP{$server_tag}{$matches[0]};
-                }
-            }
-        }
+        my $mapped_id = find_thread_pd_id($server_tag, $target_tid);
         if ($mapped_id && index(uc($mapped_id), uc($word)) == 0) {
             push(@$complist, $mapped_id);
             $seen{$mapped_id} = 1;
@@ -355,22 +374,7 @@ sub cmd_pagerduty_cache_search {
         my $target_tid = resolve_thread_id($channel, $thread_id);
         my $server_tag = $server ? $server->{tag} : '';
 
-        if ($server_tag && exists $THREAD_PD_MAP{$server_tag}) {
-            if (exists $THREAD_PD_MAP{$server_tag}{$target_tid}) {
-                $pd_id = $THREAD_PD_MAP{$server_tag}{$target_tid};
-            } else {
-                my @matches = grep {
-                    index($_, $target_tid) == 0 || index($target_tid, $_) == 0
-                } keys %{$THREAD_PD_MAP{$server_tag}};
-
-                if (@matches == 1) {
-                    $pd_id = $THREAD_PD_MAP{$server_tag}{$matches[0]};
-                } elsif (@matches > 1) {
-                    # Ambiguous prefix across mapped threads; leave input unchanged
-                    return;
-                }
-            }
-        }
+        $pd_id = find_thread_pd_id($server_tag, $target_tid);
         return unless $pd_id;
     }
 
