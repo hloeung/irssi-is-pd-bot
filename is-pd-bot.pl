@@ -20,8 +20,6 @@ our %IRSSI = (
 Irssi::settings_add_str('matterircd_complete', 'matterircd_complete_networks', '');
 Irssi::settings_add_str('is_pd_bot', 'is_pd_bot_nick', 'is-pd-bot');
 Irssi::settings_add_str('is_pd_bot', 'is_pd_bot_pagerduty_channel', 'is-pagerduty');
-# Noisy bots sharing the same outage channel.
-Irssi::settings_add_str('is_pd_bot', 'is_pd_bot_noisy_bots', 'webbot');
 
 my $pd_url = 'https://canonical.pagerduty.com/incidents/';
 
@@ -50,6 +48,15 @@ sub chatnet_enabled {
 Irssi::signal_add('setup changed', sub { $CHATNETS_RAW = undef; });
 Irssi::signal_add('setup reread',  sub { $CHATNETS_RAW = undef; });
 
+sub _wi_print {
+    my ($wi, $msg) = @_;
+    if ($wi) {
+        $wi->print($msg);
+    } else {
+        Irssi::print($msg);
+    }
+}
+
 my @PD_CACHE;
 my $PENDING_PD_ID;
 Irssi::settings_add_int('is_pd_bot', 'pagerduty_cache_size', 20);
@@ -59,10 +66,11 @@ sub cmd_pagerduty_cache_dump {
     return unless chatnet_enabled($server);
 
     if (scalar(@PD_CACHE) == 0) {
-        Irssi::print('Empty PagerDuty incidents in cache, see ' . $pd_url);
+        _wi_print($wi, 'Empty PagerDuty incidents in cache, see ' . $pd_url);
+        return;
     }
     foreach my $pd_id (@PD_CACHE) {
-        Irssi::print($pd_id . ' - ' . $pd_url . $pd_id);
+        _wi_print($wi, $pd_id . ' - ' . $pd_url . $pd_id);
     }
 };
 Irssi::command_bind('pagerduty_cache_dump', 'cmd_pagerduty_cache_dump');
@@ -79,7 +87,6 @@ sub signal_message_public {
     return unless lc($target) eq lc($pagerduty_channel);
 
     my $bot_nick = Irssi::settings_get_str('is_pd_bot_nick');
-    my @noisy_bots = split(/\s+/, Irssi::settings_get_str('is_pd_bot_noisy_bots'));
 
     if ((lc($target) eq lc($pagerduty_channel)) && (lc($nick) eq lc($bot_nick))) {
         my $pd_id;
@@ -132,12 +139,6 @@ sub signal_message_public {
             }
         }
     }
-
-    else {
-        return;
-    }
-
-    Irssi::signal_continue($server, $msg, $nick, $address, $target);
 };
 Irssi::signal_add_last('message public', 'signal_message_public');
 
@@ -183,13 +184,13 @@ sub cmd_pagerduty_cache_search {
 
     if ($pd_id) {
         # Save input text.
-        my $input = parse_special('$L');
+        my $input = Irssi::parse_special('$L');
         # Remove previously inserted PagerDuty incident.
         $input =~ s/(P\w{6}|Q\w{13})$//;
 
         # Insert PagerDuty incident from cache.
-        gui_input_set_pos(0);
-        gui_input_set($input . $pd_id);
+        Irssi::gui_input_set_pos(0);
+        Irssi::gui_input_set($input . $pd_id);
 
         $PD_ADDED = 1;
     }
