@@ -122,7 +122,7 @@ my %PD_STATUS;
 sub is_canonical_tid {
     my ($tid) = @_;
     return 0 unless defined $tid && length $tid;
-    return (length($tid) == 26 || $tid =~ /^\$/ || $tid =~ /^[0-9a-f]{3}$/) ? 1 : 0;
+    return (length($tid) == 26 || $tid =~ /^\$[0-9A-Za-z\-_\.]{43}$/ || $tid =~ /^[0-9a-f]{3}$/) ? 1 : 0;
 }
 
 sub is_pd_id_mapped {
