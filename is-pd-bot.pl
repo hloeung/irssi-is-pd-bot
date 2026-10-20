@@ -71,26 +71,6 @@ sub resolve_thread_id {
     return $id;
 }
 
-my @PD_CACHE;
-my $PENDING_PD_ID;
-my $PENDING_TID;
-my %THREAD_PD_MAP;
-my @THREAD_PD_ORDER;
-
-sub set_thread_pd_map {
-    my ($tid, $pd_id) = @_;
-    return unless $tid && $pd_id;
-    if (!exists $THREAD_PD_MAP{$tid}) {
-        push(@THREAD_PD_ORDER, $tid);
-        if (@THREAD_PD_ORDER > 50) {
-            delete $THREAD_PD_MAP{shift(@THREAD_PD_ORDER)};
-        }
-    }
-    $THREAD_PD_MAP{$tid} = $pd_id;
-}
-
-Irssi::settings_add_int('is_pd_bot', 'pagerduty_cache_size', 20);
-
 sub thread_color {
     my ($id) = @_;
     if (defined &Irssi::Script::matterircd_complete::thread_color) {
@@ -105,6 +85,40 @@ sub thread_color {
     return "\x03" . $colors[$n];
 }
 
+sub short_thread_id {
+    my ($id) = @_;
+    return $id unless defined $id && length $id;
+    my $len = Irssi::settings_get_int('matterircd_complete_shorten_message_thread_id');
+    $len = 5 if !defined($len) || $len <= 0;
+    my $thread_m_style = ($id =~ /^[0-9a-f]{3}$/) ? 1 : 0;
+    if (($len < 25) && ($thread_m_style != 1) && (length($id) > $len)) {
+        return substr($id, 0, $len) . '…';
+    }
+    return $id;
+}
+
+my @PD_CACHE;
+my $PENDING_PD_ID;
+my $PENDING_TID;
+my %THREAD_PD_MAP;
+my @THREAD_PD_ORDER;
+my %PD_STATUS;
+
+sub set_thread_pd_map {
+    my ($tid, $pd_id) = @_;
+    return unless $tid && $pd_id;
+    if (!exists $THREAD_PD_MAP{$tid}) {
+        push(@THREAD_PD_ORDER, $tid);
+        if (@THREAD_PD_ORDER > 50) {
+            my $old_tid = shift(@THREAD_PD_ORDER);
+            my $old_pd_id = delete $THREAD_PD_MAP{$old_tid};
+            delete $PD_STATUS{$old_pd_id} if $old_pd_id && !grep { $_ eq $old_pd_id } @PD_CACHE;
+        }
+    }
+    $THREAD_PD_MAP{$tid} = $pd_id;
+}
+
+Irssi::settings_add_int('is_pd_bot', 'pagerduty_cache_size', 20);
 sub cmd_pagerduty_cache_dump {
     my ($data, $server, $wi) = @_;
 
@@ -114,14 +128,18 @@ sub cmd_pagerduty_cache_dump {
         _wi_print($wi, 'Empty active PagerDuty incidents in cache, see ' . $pd_url);
     } else {
         foreach my $pd_id (@PD_CACHE) {
-            _wi_print($wi, $pd_id . ' - ' . $pd_url . $pd_id);
+            my $status_str = (exists $PD_STATUS{$pd_id} && length $PD_STATUS{$pd_id}) ? " ($PD_STATUS{$pd_id})" : "";
+            _wi_print($wi, $pd_id . $status_str . ' - ' . $pd_url . $pd_id);
         }
     }
     if (scalar(keys %THREAD_PD_MAP) > 0) {
         _wi_print($wi, 'Mapped Threads:');
         foreach my $t (sort keys %THREAD_PD_MAP) {
             my $col = thread_color($t);
-            _wi_print($wi, "  ${col}\@\@$t\x0f -> $THREAD_PD_MAP{$t}");
+            my $short_t = short_thread_id($t);
+            my $pd_id = $THREAD_PD_MAP{$t};
+            my $status_str = (exists $PD_STATUS{$pd_id} && length $PD_STATUS{$pd_id}) ? " ($PD_STATUS{$pd_id})" : "";
+            _wi_print($wi, "  ${col}[${short_t}]\x0f -> $pd_id$status_str");
         }
     }
 };
@@ -172,6 +190,7 @@ sub signal_message_public {
         if (($clean_msg =~ /(P\w{6}|Q\w{13})\s+.*✅ RESOLVED/) || ($PENDING_PD_ID && $clean_msg =~ /✅ RESOLVED/)) {
             my $resolved_id = $1 || $PENDING_PD_ID;
             set_thread_pd_map($tid || $PENDING_TID, $resolved_id);
+            $PD_STATUS{$resolved_id} = '✅ RESOLVED';
             $PENDING_PD_ID = undef;
             $PENDING_TID   = undef;
             for my $i (0 .. $#PD_CACHE) {
@@ -181,9 +200,16 @@ sub signal_message_public {
             }
         }
         # Match active PagerDuty incidents to populate cache (same-line or wrapped table)
-        elsif (($clean_msg =~ /(P\w{6}|Q\w{13})\s+.*(?:🚨 TRIGGERED|🆗 ACKNOWLEDGED|‼ UNACKNOWLEDGED|📤 ESCALATED|📥 (?:RE)?ASSIGNED|💤 SNOOZED)/)
-            || ($PENDING_PD_ID && $clean_msg =~ /(?:🚨 TRIGGERED|🆗 ACKNOWLEDGED|‼ UNACKNOWLEDGED|📤 ESCALATED|📥 (?:RE)?ASSIGNED|💤 SNOOZED)/)) {
-            $pd_id = $1 || $PENDING_PD_ID;
+        elsif ($clean_msg =~ /(P\w{6}|Q\w{13})\s+.*(🚨 TRIGGERED|🆗 ACKNOWLEDGED|‼️ UNACKNOWLEDGED|📤 ESCALATED|📥 (?:RE)?ASSIGNED|💤 SNOOZED)/) {
+            $pd_id = $1;
+            $PD_STATUS{$pd_id} = $2;
+            set_thread_pd_map($tid || $PENDING_TID, $pd_id);
+            $PENDING_PD_ID = undef;
+            $PENDING_TID   = undef;
+        }
+        elsif ($PENDING_PD_ID && $clean_msg =~ /(🚨 TRIGGERED|🆗 ACKNOWLEDGED|‼️ UNACKNOWLEDGED|📤 ESCALATED|📥 (?:RE)?ASSIGNED|💤 SNOOZED)/) {
+            $pd_id = $PENDING_PD_ID;
+            $PD_STATUS{$pd_id} = $1;
             set_thread_pd_map($tid || $PENDING_TID, $pd_id);
             $PENDING_PD_ID = undef;
             $PENDING_TID   = undef;
