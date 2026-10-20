@@ -155,7 +155,7 @@ sub cmd_pagerduty_cache_dump {
             my $short_t = short_thread_id($t);
             my $pd_id = $THREAD_PD_MAP{$server_tag}{$t};
             my $status_str = (exists $PD_STATUS{$pd_id} && length $PD_STATUS{$pd_id}) ? " ($PD_STATUS{$pd_id})" : "";
-            _wi_print($wi, "  ${col}[${short_t}]\x0f -> $pd_id$status_str");
+            _wi_print($wi, "${col}[${short_t}]\x0f -> $pd_id$status_str");
         }
     }
 };
@@ -208,8 +208,8 @@ sub signal_message_public {
 
         # Track pending incident ID from URL, table row, or wrapped bare ID
         if ($clean_msg =~ /(?:incidents\/|[🮇\|]\s*|\b)(P[A-Z0-9]{6}|Q[A-Z0-9]{13})\b/ && $clean_msg !~ /Alert ID/) {
-            $PENDING_PD_ID = $1;
-            set_thread_pd_map($server_tag, $tid, $PENDING_PD_ID);
+            $PENDING_PD_ID{$server_tag} = $1;
+            set_thread_pd_map($server_tag, $tid, $PENDING_PD_ID{$server_tag});
         }
 
         # Clean up resolved PagerDuty incident from cache (same-line or wrapped table)
