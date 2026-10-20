@@ -17,12 +17,26 @@ our %IRSSI = (
     license     => 'GPL',
 );
 
+my $pd_url = 'https://canonical.pagerduty.com/incidents/';
+
 Irssi::settings_add_str('matterircd_complete', 'matterircd_complete_networks', '');
 Irssi::settings_add_str('is_pd_bot', 'is_pd_bot_nick', 'is-pd-bot');
 Irssi::settings_add_str('is_pd_bot', 'is_pd_bot_pagerduty_channel', 'is-pagerduty');
 Irssi::settings_add_int('is_pd_bot', 'is_pd_bot_pagerduty_cache_size', 20);
+Irssi::settings_add_int('is_pd_bot', 'pagerduty_cache_size', -1);
 
-my $pd_url = 'https://canonical.pagerduty.com/incidents/';
+sub get_pagerduty_cache_size {
+    my $legacy = Irssi::settings_get_int('pagerduty_cache_size');
+    my $new    = Irssi::settings_get_int('is_pd_bot_pagerduty_cache_size');
+    return $legacy if defined($legacy) && $legacy > 0 && (!defined($new) || $new == 20);
+    return (defined($new) && $new > 0) ? $new : 20;
+}
+
+# Migrate legacy setting if customized
+my $legacy_cache_size = Irssi::settings_get_int('pagerduty_cache_size');
+if ($legacy_cache_size > 0 && Irssi::settings_get_int('is_pd_bot_pagerduty_cache_size') == 20) {
+    Irssi::settings_set_int('is_pd_bot_pagerduty_cache_size', $legacy_cache_size);
+}
 
 # Cached chatnet check (from matterircd_complete.pl)
 my $CHATNETS_RAW;
@@ -299,7 +313,7 @@ sub signal_message_public {
             # Store most recently seen PagerDuty incidents at the start.
             unshift(@PD_CACHE, $pd_id);
             # Remove last seen PagerDuty incidents if reached max. cache size.
-            if (scalar(@PD_CACHE) > Irssi::settings_get_int('is_pd_bot_pagerduty_cache_size')) {
+            if (scalar(@PD_CACHE) > get_pagerduty_cache_size()) {
                 my $popped = pop(@PD_CACHE);
                 if ($popped && !is_pd_id_mapped($popped)) {
                     delete $PD_STATUS{$popped};
