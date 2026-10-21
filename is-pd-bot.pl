@@ -16,11 +16,12 @@ our %IRSSI = (
     license     => 'GPL',
 );
 
-my $pd_url = 'https://canonical.pagerduty.com/incidents/';
+my $pd_url;
 
 Irssi::settings_add_str('matterircd_complete', 'matterircd_complete_networks', '');
 Irssi::settings_add_str('is_pd_bot', 'is_pd_bot_nick', 'is-pd-bot');
 Irssi::settings_add_str('is_pd_bot', 'is_pd_bot_pagerduty_channel', 'is-pagerduty');
+Irssi::settings_add_str('is_pd_bot', 'is_pd_bot_pagerduty_url', 'https://canonical.pagerduty.com/incidents/');
 Irssi::settings_add_int('is_pd_bot', 'is_pd_bot_pagerduty_cache_size', 20);
 Irssi::settings_add_int('is_pd_bot', 'pagerduty_cache_size', -1);
 
@@ -45,6 +46,16 @@ my $CHATNETS_RAW;
 my %CHATNETS;
 my $PD_CHANNEL;
 my $BOT_NICK;
+
+sub get_pagerduty_url {
+    if (!defined $pd_url) {
+        $pd_url = Irssi::settings_get_str('is_pd_bot_pagerduty_url');
+        $pd_url = 'https://canonical.pagerduty.com/incidents/' unless defined($pd_url) && length($pd_url);
+        $pd_url =~ s{/+$}{};
+        $pd_url .= '/';
+    }
+    return $pd_url;
+}
 
 sub get_pagerduty_channel {
     if (!defined $PD_CHANNEL) {
@@ -72,8 +83,8 @@ sub chatnet_enabled {
     return exists $CHATNETS{lc($server_or_chatnet)};
 }
 
-Irssi::signal_add('setup changed', sub { $CHATNETS_RAW = $PD_CHANNEL = $BOT_NICK = undef; });
-Irssi::signal_add('setup reread',  sub { $CHATNETS_RAW = $PD_CHANNEL = $BOT_NICK = undef; });
+Irssi::signal_add('setup changed', sub { $CHATNETS_RAW = $PD_CHANNEL = $BOT_NICK = $pd_url = undef; });
+Irssi::signal_add('setup reread',  sub { $CHATNETS_RAW = $PD_CHANNEL = $BOT_NICK = $pd_url = undef; });
 
 sub _wi_print {
     my ($wi, $msg) = @_;
