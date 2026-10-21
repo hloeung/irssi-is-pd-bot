@@ -43,6 +43,16 @@ if ($legacy_cache_size > 0) {
 # Cached chatnet check (from matterircd_complete.pl)
 my $CHATNETS_RAW;
 my %CHATNETS;
+my $PD_CHANNEL;
+my $BOT_NICK;
+
+sub get_pagerduty_channel {
+    if (!defined $PD_CHANNEL) {
+        $PD_CHANNEL = Irssi::settings_get_str('is_pd_bot_pagerduty_channel');
+        $PD_CHANNEL = "#$PD_CHANNEL" unless $PD_CHANNEL =~ /^#/;
+    }
+    return $PD_CHANNEL;
+}
 
 sub chatnet_enabled {
     my ($server_or_chatnet) = @_;
@@ -62,8 +72,8 @@ sub chatnet_enabled {
     return exists $CHATNETS{lc($server_or_chatnet)};
 }
 
-Irssi::signal_add('setup changed', sub { $CHATNETS_RAW = undef; });
-Irssi::signal_add('setup reread',  sub { $CHATNETS_RAW = undef; });
+Irssi::signal_add('setup changed', sub { $CHATNETS_RAW = $PD_CHANNEL = $BOT_NICK = undef; });
+Irssi::signal_add('setup reread',  sub { $CHATNETS_RAW = $PD_CHANNEL = $BOT_NICK = undef; });
 
 sub _wi_print {
     my ($wi, $msg) = @_;
@@ -78,11 +88,14 @@ sub resolve_thread_id {
     my ($target, $id) = @_;
     return $id unless defined $id && length $id;
     $id =~ s/(?:…|\.\.\.)$//;
-    if (defined &Irssi::Script::matterircd_complete::msgthreadid_find) {
-        my $full = Irssi::Script::matterircd_complete::msgthreadid_find($target, $id);
-        return $full if defined $full && length $full;
-    } elsif (defined &Irssi::Script::Matterircd_Tab_Auto_Complete::msgthreadid_find) {
-        my $full = Irssi::Script::Matterircd_Tab_Auto_Complete::msgthreadid_find($target, $id);
+    my $resolver = defined &Irssi::Script::matterircd_complete::msgthreadid_find
+        ? \&Irssi::Script::matterircd_complete::msgthreadid_find
+        : defined &Irssi::Script::Matterircd_Tab_Auto_Complete::msgthreadid_find
+            ? \&Irssi::Script::Matterircd_Tab_Auto_Complete::msgthreadid_find : undef;
+    if ($resolver) {
+        local $@;
+        my $full = eval { $resolver->($target, $id) };
+        Irssi::print("is-pd-bot: thread ID lookup failed: $@") if $@;
         return $full if defined $full && length $full;
     }
     return $id;
@@ -90,10 +103,16 @@ sub resolve_thread_id {
 
 sub thread_color {
     my ($id) = @_;
-    if (defined &Irssi::Script::matterircd_complete::thread_color) {
-        return Irssi::Script::matterircd_complete::thread_color($id);
-    } elsif (defined &Irssi::Script::Matterircd_Tab_Auto_Complete::thread_color) {
-        return Irssi::Script::Matterircd_Tab_Auto_Complete::thread_color($id);
+    return "\x03" . '03' unless defined $id && length $id;
+    my $colorer = defined &Irssi::Script::matterircd_complete::thread_color
+        ? \&Irssi::Script::matterircd_complete::thread_color
+        : defined &Irssi::Script::Matterircd_Tab_Auto_Complete::thread_color
+            ? \&Irssi::Script::Matterircd_Tab_Auto_Complete::thread_color : undef;
+    if ($colorer) {
+        local $@;
+        my $color = eval { $colorer->($id) };
+        Irssi::print("is-pd-bot: thread color lookup failed: $@") if $@;
+        return $color if defined $color && length $color;
     }
     # Fallback deterministic mIRC color if matterircd_complete is unavailable
     my @colors = qw(03 04 06 07 09 10 11 12 13);
@@ -117,6 +136,7 @@ sub short_thread_id {
 my %PD_CACHE;
 my %PENDING_PD_ID;
 my %PENDING_TID;
+my %PENDING_SINCE;
 my %THREAD_PD_MAP;
 my %THREAD_PD_ORDER;
 my %PD_STATUS;
@@ -124,13 +144,16 @@ my %PD_STATUS;
 sub is_canonical_tid {
     my ($tid) = @_;
     return 0 unless defined $tid && length $tid;
-    return ($tid =~ /^[0-9a-z]{26}$/ || $tid =~ /^\$[0-9A-Za-z\-_\.]{43}$/ || $tid =~ /^[0-9a-f]{3}$/) ? 1 : 0;
+    return ($tid =~ /^[0-9a-z]{26}$/ || $tid =~ /^\$[0-9A-Za-z\-_\.]{43}$/) ? 1 : 0;
 }
 
 sub is_pd_id_mapped {
     my ($server_tag, $id) = @_;
     return 0 unless defined $id && exists $THREAD_PD_MAP{$server_tag};
-    return scalar grep { $_ eq $id } values %{$THREAD_PD_MAP{$server_tag}};
+    for my $mapped_id (values %{$THREAD_PD_MAP{$server_tag}}) {
+        return 1 if $mapped_id eq $id;
+    }
+    return 0;
 }
 
 sub is_thread_alias {
@@ -186,14 +209,15 @@ sub set_thread_pd_map {
         for my $k (keys %{$THREAD_PD_MAP{$server_tag}}) {
             if ($k ne $tid && index($tid, $k) == 0 && $THREAD_PD_MAP{$server_tag}{$k} eq $pd_id) {
                 delete $THREAD_PD_MAP{$server_tag}{$k};
-                @{$THREAD_PD_ORDER{$server_tag}} = grep { $_ ne $k } @{$THREAD_PD_ORDER{$server_tag}};
             }
         }
     }
 
     $THREAD_PD_MAP{$server_tag}{$tid} = $pd_id;
     # Maintain LRU ordering
-    @{$THREAD_PD_ORDER{$server_tag}} = grep { $_ ne $tid } @{$THREAD_PD_ORDER{$server_tag} // []};
+    @{$THREAD_PD_ORDER{$server_tag}} = grep {
+        $_ ne $tid && exists $THREAD_PD_MAP{$server_tag}{$_}
+    } @{$THREAD_PD_ORDER{$server_tag} // []};
     push(@{$THREAD_PD_ORDER{$server_tag}}, $tid);
     if (@{$THREAD_PD_ORDER{$server_tag}} > 50) {
         my $old_tid = shift(@{$THREAD_PD_ORDER{$server_tag}});
@@ -251,16 +275,14 @@ my %PD_CACHE_INDEX;
 sub signal_message_public {
     my ($server, $msg, $nick, $address, $target) = @_;
 
-    return unless chatnet_enabled($server);
+    return unless $server && defined($msg) && defined($nick) && defined($target) && chatnet_enabled($server);
+    my $bot_nick = ($BOT_NICK //= Irssi::settings_get_str('is_pd_bot_nick'));
+    return unless lc($nick) eq lc($bot_nick);
 
-    my $pagerduty_channel = Irssi::settings_get_str('is_pd_bot_pagerduty_channel');
-    $pagerduty_channel = "#$pagerduty_channel" unless $pagerduty_channel =~ /^#/;
-    return unless lc($target) eq lc($pagerduty_channel);
-
+    my $pagerduty_channel = get_pagerduty_channel();
     my $server_tag = $server->{tag};
-    my $bot_nick = Irssi::settings_get_str('is_pd_bot_nick');
 
-    if ((lc($target) eq lc($pagerduty_channel)) && (lc($nick) eq lc($bot_nick))) {
+    if (lc($target) eq lc($pagerduty_channel)) {
         my $pd_id;
         my $cache = ($PD_CACHE{$server_tag} //= []);
 
@@ -285,6 +307,26 @@ sub signal_message_public {
             $tid =~ s/(?:…|\.\.\.)$//;
         }
         $tid = resolve_thread_id($target, $tid) if $tid;
+        # Explicit prefixes can outlive pending continuations; only expand a unique full ID.
+        if ($tid && !is_canonical_tid($tid) && exists $THREAD_PD_MAP{$server_tag}
+            && !exists $THREAD_PD_MAP{$server_tag}{$tid}) {
+            my @matches = grep {
+                is_canonical_tid($_) && index($_, $tid) == 0
+            } keys %{$THREAD_PD_MAP{$server_tag}};
+            $tid = $matches[0] if @matches == 1;
+        }
+        my $explicit_tid = $tid;
+
+        # Wrapped lines must arrive promptly; unrelated posts must not inherit stale context.
+        if (exists $PENDING_SINCE{$server_tag} && time - $PENDING_SINCE{$server_tag} > 30) {
+            $PENDING_PD_ID{$server_tag} = undef;
+            $PENDING_TID{$server_tag} = undef;
+            delete $PENDING_SINCE{$server_tag};
+        }
+        if ($tid && !$PENDING_TID{$server_tag}) {
+            $PENDING_PD_ID{$server_tag} = undef;
+            delete $PENDING_SINCE{$server_tag};
+        }
 
         # Clear pending continuation if explicit thread context changes; carry pending thread on untagged continuations
         if ($PENDING_TID{$server_tag} && defined($tid)) {
@@ -296,6 +338,7 @@ sub signal_message_public {
                 }
             } else {
                 $PENDING_PD_ID{$server_tag} = undef;
+                delete $PENDING_SINCE{$server_tag};
             }
         }
         if ($tid) {
@@ -306,6 +349,10 @@ sub signal_message_public {
 
         # Track pending incident ID from URL, table row, or wrapped bare ID
         if ($clean_msg =~ /(?:incidents\/|[🮇\|]\s*|\b)(P[A-Z0-9]{6}|Q[A-Z0-9]{13})\b/ && $clean_msg !~ /Alert ID/) {
+            if ($PENDING_PD_ID{$server_tag} && $PENDING_PD_ID{$server_tag} ne $1) {
+                $tid = $PENDING_TID{$server_tag} = undef unless $explicit_tid;
+                delete $PENDING_SINCE{$server_tag};
+            }
             $PENDING_PD_ID{$server_tag} = $1;
             set_thread_pd_map($server_tag, $tid, $PENDING_PD_ID{$server_tag});
         }
@@ -347,6 +394,12 @@ sub signal_message_public {
             $PENDING_TID{$server_tag}   = undef;
         }
 
+        if ($PENDING_PD_ID{$server_tag} || $PENDING_TID{$server_tag}) {
+            $PENDING_SINCE{$server_tag} //= time;
+        } else {
+            delete $PENDING_SINCE{$server_tag};
+        }
+
         if ($pd_id) {
             # Reset search index on changes.
             if ($cache->[0] && ($cache->[0] ne $pd_id)) {
@@ -382,8 +435,7 @@ sub signal_complete_word_pagerduty {
     return unless $window->{active};
     my $server_tag = $window->{active_server}->{tag};
 
-    my $pagerduty_channel = Irssi::settings_get_str('is_pd_bot_pagerduty_channel');
-    $pagerduty_channel = "#$pagerduty_channel" unless $pagerduty_channel =~ /^#/;
+    my $pagerduty_channel = get_pagerduty_channel();
     return unless (lc($window->{active}->{name}) eq lc($pagerduty_channel) || $window->{active}->{name} =~ /^@@/);
 
     return unless $word =~ /^[PQ]/i;
@@ -451,8 +503,7 @@ Irssi::signal_add('window server changed', 'signal_pagerduty_window_context_chan
 sub cmd_pagerduty_cache_search {
     my ($data, $server, $wi) = @_;
 
-    my $pagerduty_channel = Irssi::settings_get_str('is_pd_bot_pagerduty_channel');
-    $pagerduty_channel = "#$pagerduty_channel" unless $pagerduty_channel =~ /^#/;
+    my $pagerduty_channel = get_pagerduty_channel();
     return unless ref $wi and (lc($wi->{name}) eq lc($pagerduty_channel) || $wi->{name} =~ /^@@/);
 
     return unless chatnet_enabled($server);
@@ -504,7 +555,7 @@ sub cmd_pagerduty_cache_search {
         }
 
         # Replace previously inserted standalone PagerDuty incident, or append with spacing
-        if (!($input =~ s/(P[A-Z0-9]{6}|Q[A-Z0-9]{13})$/${pd_id}/)) {
+        if (!$PD_ADDED || !($input =~ s/(?<!\S)(P[A-Z0-9]{6}|Q[A-Z0-9]{13})\z/${pd_id}/)) {
             $PD_SEPARATOR_ADDED = ($input =~ /\S$/) ? 1 : 0;
             $input .= ' ' if $PD_SEPARATOR_ADDED;
             $input .= $pd_id;
