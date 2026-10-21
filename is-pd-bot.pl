@@ -462,7 +462,7 @@ sub signal_message_public {
         my $has_pd_id = $clean_msg =~ /(?:incidents\/|[🮇\|]\s*|\b)(?:P[A-Z0-9]{6}|Q[A-Z0-9]{13})\b/
             && $clean_msg !~ /Alert ID/;
         my $has_status = $clean_msg =~ /(?:✅ RESOLVED|🚨 TRIGGERED|🆗 ACKNOWLEDGED|(?:‼|‼️|!!) UNACKNOWLEDGED|📤 ESCALATED|📥 (?:RE)?ASSIGNED|💤 SNOOZED)/;
-        my $has_table_marker = $clean_msg =~ /[🮇|]/;
+        my $has_table_marker = $clean_msg =~ /(?:🮇|\|)/;
         my $same_thread = $explicit_tid && $PENDING_TID{$server_tag}
             && is_thread_alias($server_tag, $explicit_tid, $PENDING_TID{$server_tag});
         if ($PENDING_PD_ID{$server_tag} && !$has_pd_id
