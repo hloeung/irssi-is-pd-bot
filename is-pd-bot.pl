@@ -439,8 +439,9 @@ sub signal_message_public {
         }
         my $explicit_tid = $tid;
         my $message_content = $clean_msg;
+        $message_content =~ s/^\[\d{4}-\d{2}-\d{2} \d{2}:\d{2}(?::\d{2})?\]\s*//;
         if ($explicit_tid) {
-            $message_content =~ s/^(?:\[\d{4}-\d{2}-\d{2} \d{2}:\d{2}(?::\d{2})?\]\s*)?\[(?:->|↪)?(?:\@\@)?(?:[0-9a-z]{1,26}|\$[0-9A-Za-z\-_\.]{1,43})(?:…|\.\.\.)?(?:,[^\]]+)?\]\s*//;
+            $message_content =~ s/^\[(?:->|↪)?(?:\@\@)?(?:[0-9a-z]{1,26}|\$[0-9A-Za-z\-_\.]{1,43})(?:…|\.\.\.)?(?:,[^\]]+)?\]\s*//;
         }
 
         # Wrapped lines must arrive promptly; unrelated posts must not inherit stale context.
