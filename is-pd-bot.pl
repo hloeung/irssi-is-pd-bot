@@ -277,8 +277,15 @@ sub cmd_pagerduty_cache_dump_active {
 
         _wi_print($wi, 'Active PagerDuty incidents:');
         foreach my $pd_id (@items) {
-            my $status_str = (exists $PD_STATUS{$server_tag}{$pd_id} && length $PD_STATUS{$server_tag}{$pd_id}) ? " ($PD_STATUS{$server_tag}{$pd_id})" : "";
-            my $thread_prefix = '—';
+            my $status_str = ' ' x 17;
+            if (exists $PD_STATUS{$server_tag}{$pd_id} && length $PD_STATUS{$server_tag}{$pd_id}) {
+                my $st = $PD_STATUS{$server_tag}{$pd_id};
+                my ($word) = $st =~ /([A-Z]+)$/;
+                my $pad = ' ' x (11 - length($word // ''));
+                $status_str = " ($st)$pad";
+            }
+
+            my $thread_prefix = '—       ';
             if ($server_tag && exists $THREAD_PD_MAP{$server_tag}) {
                 my ($t) = grep { $THREAD_PD_MAP{$server_tag}{$_} eq $pd_id } reverse @{$THREAD_PD_ORDER{$server_tag} // []};
                 if ($t) {
