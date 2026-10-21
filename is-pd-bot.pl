@@ -236,10 +236,16 @@ sub cmd_pagerduty_cache_dump {
 
     return unless chatnet_enabled($server);
     my $server_tag = $server ? $server->{tag} : '';
+    my @threads = grep { exists $THREAD_PD_MAP{$server_tag}{$_} } @{$THREAD_PD_ORDER{$server_tag} // []};
 
-    if ($server_tag && exists $THREAD_PD_MAP{$server_tag} && scalar(keys %{$THREAD_PD_MAP{$server_tag}}) > 0) {
+    if ($server_tag && @threads) {
+        my ($limit) = $data =~ /(\d+)/;
+        if ($limit && $limit > 0 && @threads > $limit) {
+            splice(@threads, 0, @threads - $limit);
+        }
+
         _wi_print($wi, 'Mapped Threads:');
-        foreach my $t (sort keys %{$THREAD_PD_MAP{$server_tag}}) {
+        foreach my $t (@threads) {
             my $col = thread_color($t);
             my $short_t = short_thread_id($t);
             my $pd_id = $THREAD_PD_MAP{$server_tag}{$t};
