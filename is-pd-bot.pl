@@ -121,11 +121,16 @@ sub thread_color {
     return "\x03" . $colors[$n];
 }
 
+sub get_short_thread_len {
+    my $len = Irssi::settings_get_int('matterircd_complete_message_thread_id_min')
+        || Irssi::settings_get_int('matterircd_complete_shorten_message_thread_id');
+    return ($len && $len > 0) ? $len : 5;
+}
+
 sub short_thread_id {
     my ($id) = @_;
     return $id unless defined $id && length $id;
-    my $len = Irssi::settings_get_int('matterircd_complete_shorten_message_thread_id');
-    $len = 5 if !defined($len) || $len <= 0;
+    my $len = get_short_thread_len();
     my $thread_m_style = ($id =~ /^[0-9a-f]{3}$/) ? 1 : 0;
     if (($len < 25) && ($thread_m_style != 1) && (length($id) > $len)) {
         return substr($id, 0, $len) . '…';
@@ -275,23 +280,27 @@ sub cmd_pagerduty_cache_dump_active {
         }
         @items = reverse @items;
 
+        my $short_len = get_short_thread_len();
+        my $unmapped_prefix = '—' . (' ' x ($short_len + 5));
+
         _wi_print($wi, 'Active PagerDuty incidents:');
         foreach my $pd_id (@items) {
-            my $status_str = ' ' x 17;
+            my $status_str = ' ' x 20;
             if (exists $PD_STATUS{$server_tag}{$pd_id} && length $PD_STATUS{$server_tag}{$pd_id}) {
                 my $st = $PD_STATUS{$server_tag}{$pd_id};
                 my ($word) = $st =~ /([A-Z]+)$/;
-                my $pad = ' ' x (11 - length($word // ''));
+                my $pad = ' ' x (14 - length($word // ''));
                 $status_str = " ($st)$pad";
             }
-
-            my $thread_prefix = '—       ';
+            my $thread_prefix = $unmapped_prefix;
             if ($server_tag && exists $THREAD_PD_MAP{$server_tag}) {
                 my ($t) = grep { $THREAD_PD_MAP{$server_tag}{$_} eq $pd_id } reverse @{$THREAD_PD_ORDER{$server_tag} // []};
                 if ($t) {
                     my $col = thread_color($t);
                     my $short_t = short_thread_id($t);
-                    $thread_prefix = "${col}[${short_t}]\x0f ➜ ";
+                    my $pad = ($short_len + 1) - length($short_t);
+                    my $pad_str = ' ' x ($pad > 0 ? $pad : 0);
+                    $thread_prefix = "${col}[${short_t}]\x0f$pad_str ➜ ";
                 }
             }
             _wi_print($wi, "${thread_prefix}$pd_id$status_str ➜ $pd_url$pd_id");
