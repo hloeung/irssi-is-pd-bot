@@ -172,6 +172,13 @@ sub is_pd_id_mapped {
     return 0;
 }
 
+sub pd_cache_matches_filter {
+    my ($server_tag, $pd_id, $filter) = @_;
+    return 1 unless defined($filter) && length($filter);
+    my $status = $PD_STATUS{$server_tag}{$pd_id} // '';
+    return index(lc($pd_id), lc($filter)) >= 0 || index(lc($status), lc($filter)) >= 0;
+}
+
 sub is_thread_alias {
     my ($server_tag, $tid1, $tid2) = @_;
     return 1 if $tid1 eq $tid2;
@@ -253,9 +260,15 @@ sub cmd_pagerduty_cache_dump {
     return unless chatnet_enabled($server);
     my $server_tag = $server ? $server->{tag} : '';
     my @threads = grep { exists $THREAD_PD_MAP{$server_tag}{$_} } @{$THREAD_PD_ORDER{$server_tag} // []};
+    my ($limit) = $data =~ /(?:^|\s)(\d+)(?:\s|$)/;
+    my $filter = $data;
+    $filter =~ s/(?:^|\s)\Q$limit\E(?=\s|$)// if defined $limit;
+    $filter =~ s/^\s+|\s+$//g;
+    @threads = grep {
+        pd_cache_matches_filter($server_tag, $THREAD_PD_MAP{$server_tag}{$_}, $filter)
+    } @threads;
 
     if ($server_tag && @threads) {
-        my ($limit) = $data =~ /(\d+)/;
         if ($limit && $limit > 0 && @threads > $limit) {
             splice(@threads, 0, @threads - $limit);
         }
@@ -269,7 +282,7 @@ sub cmd_pagerduty_cache_dump {
             _wi_print($wi, "${col}[${short_t}]\x0f ➜ $pd_id$status_str");
         }
     } else {
-        _wi_print($wi, 'Empty PagerDuty incidents in cache, see ' . $pd_url);
+        _wi_print($wi, 'No mapped PagerDuty incidents matching filter, see ' . get_pagerduty_url());
     }
 };
 Irssi::command_bind('pagerduty_cache_dump', 'cmd_pagerduty_cache_dump');
@@ -282,14 +295,23 @@ sub cmd_pagerduty_cache_dump_active {
 
     my $cache = $PD_CACHE{$server_tag} // [];
     if (scalar(@$cache) == 0) {
-        _wi_print($wi, 'Empty active PagerDuty incidents in cache, see ' . $pd_url);
+        _wi_print($wi, 'Empty active PagerDuty incidents in cache, see ' . get_pagerduty_url());
     } else {
         my @items = @$cache;
-        my ($limit) = $data =~ /(\d+)/;
+        my ($limit) = $data =~ /(?:^|\s)(\d+)(?:\s|$)/;
+        my $filter = $data;
+        $filter =~ s/(?:^|\s)\Q$limit\E(?=\s|$)// if defined $limit;
+        $filter =~ s/^\s+|\s+$//g;
+        @items = grep { pd_cache_matches_filter($server_tag, $_, $filter) } @items;
         if ($limit && $limit > 0 && @items > $limit) {
             splice(@items, $limit);
         }
         @items = reverse @items;
+
+        if (!@items) {
+            _wi_print($wi, 'No active PagerDuty incidents matching filter.');
+            return;
+        }
 
         my $short_len = get_short_thread_len();
         my $unmapped_prefix = '—' . (' ' x ($short_len + 5));
@@ -314,7 +336,7 @@ sub cmd_pagerduty_cache_dump_active {
                     $thread_prefix = "${col}[${short_t}]\x0f$pad_str ➜ ";
                 }
             }
-            _wi_print($wi, "${thread_prefix}$pd_id$status_str ➜ $pd_url$pd_id");
+            _wi_print($wi, "${thread_prefix}$pd_id$status_str ➜ " . get_pagerduty_url() . $pd_id);
         }
     }
 };
