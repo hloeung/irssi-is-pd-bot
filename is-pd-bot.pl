@@ -363,17 +363,24 @@ sub cmd_pagerduty_cache_clear {
             || index(lc($PD_STATUS{$server_tag}{$_} // ''), lc($filter)) >= 0
     } keys %pd_ids;
 
+    my $pending_tid_pd_id = defined($PENDING_TID{$server_tag})
+        ? find_thread_pd_id($server_tag, $PENDING_TID{$server_tag}) : undef;
+    if ($clear_all
+        || (defined($PENDING_PD_ID{$server_tag})
+            && grep { $_ eq $PENDING_PD_ID{$server_tag} } @removed)
+        || (defined($pending_tid_pd_id)
+            && grep { $_ eq $pending_tid_pd_id } @removed)) {
+        delete $PENDING_PD_ID{$server_tag};
+        delete $PENDING_TID{$server_tag};
+        delete $PENDING_SINCE{$server_tag};
+    }
+
     for my $pd_id (@removed) {
         @{$PD_CACHE{$server_tag}} = grep { $_ ne $pd_id } @{$PD_CACHE{$server_tag} // []};
         for my $tid (keys %{$THREAD_PD_MAP{$server_tag} // {}}) {
             delete $THREAD_PD_MAP{$server_tag}{$tid} if $THREAD_PD_MAP{$server_tag}{$tid} eq $pd_id;
         }
         delete $PD_STATUS{$server_tag}{$pd_id};
-        if (defined($PENDING_PD_ID{$server_tag}) && $PENDING_PD_ID{$server_tag} eq $pd_id) {
-            delete $PENDING_PD_ID{$server_tag};
-            delete $PENDING_TID{$server_tag};
-            delete $PENDING_SINCE{$server_tag};
-        }
     }
     @{$THREAD_PD_ORDER{$server_tag}} = grep {
         exists $THREAD_PD_MAP{$server_tag}{$_}
