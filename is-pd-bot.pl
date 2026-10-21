@@ -466,10 +466,14 @@ sub signal_message_public {
             $tid = $PENDING_TID{$server_tag};
         }
 
-        my $has_pd_id = $clean_msg =~ /(?:incidents\/|[🮇\|]\s*|\b)(?:P[A-Z0-9]{6}|Q[A-Z0-9]{13})\b/
-            && $clean_msg !~ /Alert ID/;
-        my $has_status = $clean_msg =~ /(?:✅ RESOLVED|🚨 TRIGGERED|🆗 ACKNOWLEDGED|(?:‼|‼️|!!) UNACKNOWLEDGED|📤 ESCALATED|📥 (?:RE)?ASSIGNED|💤 SNOOZED)/;
-        my $has_table_marker = $clean_msg =~ /(?:🮇|\|)/;
+        my $status_pattern = qr/(?:🚨 TRIGGERED|🆗 ACKNOWLEDGED|(?:‼|‼️|!!) UNACKNOWLEDGED|📤 ESCALATED|📥 (?:RE)?ASSIGNED|💤 SNOOZED|✅ RESOLVED)/;
+        my ($url_pd_id) = $clean_msg =~ m{incidents/((?:P[A-Z0-9]{6}|Q[A-Z0-9]{13}))\b};
+        my ($table_pd_id) = $clean_msg =~ /\A(?:🮇|\|)\s*((?:P[A-Z0-9]{6}|Q[A-Z0-9]{13}))\b/;
+        my ($status_pd_id, $raw_status) = $clean_msg =~ /((?:P[A-Z0-9]{6}|Q[A-Z0-9]{13}))\s+.*?($status_pattern)/;
+        my $recognized_pd_id = $status_pd_id || $table_pd_id || $url_pd_id;
+        my $has_pd_id = defined $recognized_pd_id;
+        my $has_status = $clean_msg =~ /$status_pattern/;
+        my $has_table_marker = $clean_msg =~ /\A(?:🮇|\|)/;
         my $same_thread = $explicit_tid && $PENDING_TID{$server_tag}
             && is_thread_alias($server_tag, $explicit_tid, $PENDING_TID{$server_tag});
         if ($PENDING_PD_ID{$server_tag} && !$has_pd_id
@@ -480,18 +484,18 @@ sub signal_message_public {
         }
 
         # Track pending incident ID from URL, table row, or wrapped bare ID
-        if ($clean_msg =~ /(?:incidents\/|[🮇\|]\s*|\b)(P[A-Z0-9]{6}|Q[A-Z0-9]{13})\b/ && $clean_msg !~ /Alert ID/) {
-            if ($PENDING_PD_ID{$server_tag} && $PENDING_PD_ID{$server_tag} ne $1) {
+        if ($recognized_pd_id && $clean_msg !~ /Alert ID/) {
+            if ($PENDING_PD_ID{$server_tag} && $PENDING_PD_ID{$server_tag} ne $recognized_pd_id) {
                 $tid = $PENDING_TID{$server_tag} = undef unless $explicit_tid;
                 delete $PENDING_SINCE{$server_tag};
             }
-            $PENDING_PD_ID{$server_tag} = $1;
+            $PENDING_PD_ID{$server_tag} = $recognized_pd_id;
             set_thread_pd_map($server_tag, $tid, $PENDING_PD_ID{$server_tag});
         }
 
         # Clean up resolved PagerDuty incident from cache (same-line or wrapped table)
-        if (($clean_msg =~ /(P[A-Z0-9]{6}|Q[A-Z0-9]{13})\s+.*✅ RESOLVED/) || ($PENDING_PD_ID{$server_tag} && $clean_msg =~ /✅ RESOLVED/)) {
-            my $resolved_id = $1 || $PENDING_PD_ID{$server_tag};
+        if (($status_pd_id && $raw_status =~ /✅ RESOLVED/) || ($PENDING_PD_ID{$server_tag} && $clean_msg =~ /✅ RESOLVED/)) {
+            my $resolved_id = $status_pd_id || $PENDING_PD_ID{$server_tag};
             set_thread_pd_map($server_tag, $tid, $resolved_id);
             if (is_pd_id_mapped($server_tag, $resolved_id)) {
                 $PD_STATUS{$server_tag}{$resolved_id} = '✅ RESOLVED';
@@ -509,17 +513,16 @@ sub signal_message_public {
             }
         }
         # Match active PagerDuty incidents to populate cache (same-line or wrapped table)
-        elsif ($clean_msg =~ /(P[A-Z0-9]{6}|Q[A-Z0-9]{13})\s+.*(🚨 TRIGGERED|🆗 ACKNOWLEDGED|(?:‼|‼️|!!) UNACKNOWLEDGED|📤 ESCALATED|📥 (?:RE)?ASSIGNED|💤 SNOOZED)/) {
-            $pd_id = $1;
-            my $raw_status = $2;
+        elsif ($status_pd_id && $raw_status !~ /✅ RESOLVED/) {
+            $pd_id = $status_pd_id;
             $PD_STATUS{$server_tag}{$pd_id} = ($raw_status =~ /UNACKNOWLEDGED/) ? '‼️ UNACKNOWLEDGED' : $raw_status;
             set_thread_pd_map($server_tag, $tid, $pd_id);
             $PENDING_PD_ID{$server_tag} = undef;
             $PENDING_TID{$server_tag}   = undef;
         }
-        elsif ($PENDING_PD_ID{$server_tag} && $clean_msg =~ /(🚨 TRIGGERED|🆗 ACKNOWLEDGED|(?:‼|‼️|!!) UNACKNOWLEDGED|📤 ESCALATED|📥 (?:RE)?ASSIGNED|💤 SNOOZED)/) {
+        elsif ($PENDING_PD_ID{$server_tag} && $clean_msg =~ /($status_pattern)/ && $clean_msg !~ /✅ RESOLVED/) {
             $pd_id = $PENDING_PD_ID{$server_tag};
-            my $raw_status = $1;
+            $raw_status = $1;
             $PD_STATUS{$server_tag}{$pd_id} = ($raw_status =~ /UNACKNOWLEDGED/) ? '‼️ UNACKNOWLEDGED' : $raw_status;
             set_thread_pd_map($server_tag, $tid, $pd_id);
             $PENDING_PD_ID{$server_tag} = undef;
