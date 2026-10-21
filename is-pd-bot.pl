@@ -227,14 +227,17 @@ sub set_thread_pd_map {
     return unless $server_tag && $tid && $pd_id;
     my $prev_pd_id = $THREAD_PD_MAP{$server_tag}{$tid};
 
-    # If tid is canonical, upgrade any unexpanded shorter prefix stored for this incident
-    if (is_canonical_tid($tid) && exists $THREAD_PD_MAP{$server_tag}) {
+    # Ensure each incident ID maps to only one thread per server
+    if (exists $THREAD_PD_MAP{$server_tag}) {
         for my $k (keys %{$THREAD_PD_MAP{$server_tag}}) {
-            if ($k ne $tid && index($tid, $k) == 0 && $THREAD_PD_MAP{$server_tag}{$k} eq $pd_id) {
+            if ($k ne $tid && $THREAD_PD_MAP{$server_tag}{$k} eq $pd_id) {
                 delete $THREAD_PD_MAP{$server_tag}{$k};
             }
         }
     }
+    @{$THREAD_PD_ORDER{$server_tag}} = grep {
+        exists $THREAD_PD_MAP{$server_tag}{$_}
+    } @{$THREAD_PD_ORDER{$server_tag} // []};
 
     $THREAD_PD_MAP{$server_tag}{$tid} = $pd_id;
     # Maintain LRU ordering
@@ -435,6 +438,10 @@ sub signal_message_public {
             $tid = $matches[0] if @matches == 1;
         }
         my $explicit_tid = $tid;
+        my $message_content = $clean_msg;
+        if ($explicit_tid) {
+            $message_content =~ s/^\[(?:->|↪)?(?:\@\@)?(?:[0-9a-z]{1,26}|\$[0-9A-Za-z\-_\.]{1,43})(?:…|\.\.\.)?(?:,[^\]]+)?\]\s*//;
+        }
 
         # Wrapped lines must arrive promptly; unrelated posts must not inherit stale context.
         if (exists $PENDING_SINCE{$server_tag} && time - $PENDING_SINCE{$server_tag} > 5) {
@@ -468,13 +475,13 @@ sub signal_message_public {
 
         my $status_pattern = qr/(?:🚨 TRIGGERED|🆗 ACKNOWLEDGED|(?:‼|‼️|!!) UNACKNOWLEDGED|📤 ESCALATED|📥 (?:RE)?ASSIGNED|💤 SNOOZED|✅ RESOLVED)/;
         my ($url_pd_id) = $clean_msg =~ m{incidents/((?:P[A-Z0-9]{6}|Q[A-Z0-9]{13}))\b};
-        my ($table_pd_id) = $clean_msg =~ /\A(?:🮇|\|)\s*((?:P[A-Z0-9]{6}|Q[A-Z0-9]{13}))\b/;
-        my ($status_pd_id, $raw_status) = $clean_msg =~ /((?:P[A-Z0-9]{6}|Q[A-Z0-9]{13}))\s+.*?($status_pattern)/;
-        my ($message_status) = $clean_msg =~ /($status_pattern)/;
+        my ($table_pd_id) = $message_content =~ /\A(?:🮇|\|)\s*((?:P[A-Z0-9]{6}|Q[A-Z0-9]{13}))\b/;
+        my ($status_pd_id, $raw_status) = $message_content =~ /((?:P[A-Z0-9]{6}|Q[A-Z0-9]{13}))\s+.*?($status_pattern)/;
+        my ($message_status) = $message_content =~ /($status_pattern)/;
         my $recognized_pd_id = $status_pd_id || $table_pd_id || $url_pd_id;
         my $has_pd_id = defined $recognized_pd_id;
         my $has_status = defined $message_status;
-        my $has_table_marker = $clean_msg =~ /\A(?:🮇|\|)/;
+        my $has_table_marker = $message_content =~ /\A(?:🮇|\|)/;
         my $same_thread = $explicit_tid && $PENDING_TID{$server_tag}
             && is_thread_alias($server_tag, $explicit_tid, $PENDING_TID{$server_tag});
         if ($PENDING_PD_ID{$server_tag} && !$has_pd_id
