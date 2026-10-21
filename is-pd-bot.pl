@@ -344,6 +344,46 @@ Irssi::command_bind('pagerduty_cache_dump_active', 'cmd_pagerduty_cache_dump_act
 
 my %PD_CACHE_INDEX;
 
+sub cmd_pagerduty_cache_clear {
+    my ($data, $server, $wi) = @_;
+
+    return unless chatnet_enabled($server);
+    my $server_tag = $server ? $server->{tag} : '';
+    my $filter = $data // '';
+    $filter =~ s/^\s+|\s+$//g;
+    my $clear_all = !length($filter) || lc($filter) eq 'all';
+    my %pd_ids = map { $_ => 1 } (
+        @{$PD_CACHE{$server_tag} // []},
+        values %{$THREAD_PD_MAP{$server_tag} // {}},
+        keys %{$PD_STATUS{$server_tag} // {}},
+        (defined($PENDING_PD_ID{$server_tag}) ? $PENDING_PD_ID{$server_tag} : ())
+    );
+    my @removed = grep {
+        $clear_all || index(lc($_), lc($filter)) >= 0
+            || index(lc($PD_STATUS{$server_tag}{$_} // ''), lc($filter)) >= 0
+    } keys %pd_ids;
+
+    for my $pd_id (@removed) {
+        @{$PD_CACHE{$server_tag}} = grep { $_ ne $pd_id } @{$PD_CACHE{$server_tag} // []};
+        for my $tid (keys %{$THREAD_PD_MAP{$server_tag} // {}}) {
+            delete $THREAD_PD_MAP{$server_tag}{$tid} if $THREAD_PD_MAP{$server_tag}{$tid} eq $pd_id;
+        }
+        delete $PD_STATUS{$server_tag}{$pd_id};
+        if (defined($PENDING_PD_ID{$server_tag}) && $PENDING_PD_ID{$server_tag} eq $pd_id) {
+            delete $PENDING_PD_ID{$server_tag};
+            delete $PENDING_TID{$server_tag};
+            delete $PENDING_SINCE{$server_tag};
+        }
+    }
+    @{$THREAD_PD_ORDER{$server_tag}} = grep {
+        exists $THREAD_PD_MAP{$server_tag}{$_}
+    } @{$THREAD_PD_ORDER{$server_tag} // []};
+    $PD_CACHE_INDEX{$server_tag} = 0;
+
+    _wi_print($wi, @removed ? 'Cleared ' . scalar(@removed) . ' PagerDuty incident(s).' : 'No cached PagerDuty incidents matched.');
+};
+Irssi::command_bind('pagerduty_cache_clear', 'cmd_pagerduty_cache_clear');
+
 sub signal_message_public {
     my ($server, $msg, $nick, $address, $target) = @_;
 
@@ -390,7 +430,7 @@ sub signal_message_public {
         my $explicit_tid = $tid;
 
         # Wrapped lines must arrive promptly; unrelated posts must not inherit stale context.
-        if (exists $PENDING_SINCE{$server_tag} && time - $PENDING_SINCE{$server_tag} > 30) {
+        if (exists $PENDING_SINCE{$server_tag} && time - $PENDING_SINCE{$server_tag} > 5) {
             $PENDING_PD_ID{$server_tag} = undef;
             $PENDING_TID{$server_tag} = undef;
             delete $PENDING_SINCE{$server_tag};
@@ -417,6 +457,14 @@ sub signal_message_public {
             $PENDING_TID{$server_tag} = $tid;
         } else {
             $tid = $PENDING_TID{$server_tag};
+        }
+
+        if ($PENDING_PD_ID{$server_tag}
+            && $clean_msg !~ /(?:P[A-Z0-9]{6}|Q[A-Z0-9]{13})/
+            && $clean_msg !~ /(?:✅ RESOLVED|🚨 TRIGGERED|🆗 ACKNOWLEDGED|(?:‼|‼️|!!) UNACKNOWLEDGED|📤 ESCALATED|📥 (?:RE)?ASSIGNED|💤 SNOOZED)/) {
+            $PENDING_PD_ID{$server_tag} = undef;
+            $PENDING_TID{$server_tag} = undef;
+            delete $PENDING_SINCE{$server_tag};
         }
 
         # Track pending incident ID from URL, table row, or wrapped bare ID
