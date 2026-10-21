@@ -470,9 +470,10 @@ sub signal_message_public {
         my ($url_pd_id) = $clean_msg =~ m{incidents/((?:P[A-Z0-9]{6}|Q[A-Z0-9]{13}))\b};
         my ($table_pd_id) = $clean_msg =~ /\A(?:🮇|\|)\s*((?:P[A-Z0-9]{6}|Q[A-Z0-9]{13}))\b/;
         my ($status_pd_id, $raw_status) = $clean_msg =~ /((?:P[A-Z0-9]{6}|Q[A-Z0-9]{13}))\s+.*?($status_pattern)/;
+        my ($message_status) = $clean_msg =~ /($status_pattern)/;
         my $recognized_pd_id = $status_pd_id || $table_pd_id || $url_pd_id;
         my $has_pd_id = defined $recognized_pd_id;
-        my $has_status = $clean_msg =~ /$status_pattern/;
+        my $has_status = defined $message_status;
         my $has_table_marker = $clean_msg =~ /\A(?:🮇|\|)/;
         my $same_thread = $explicit_tid && $PENDING_TID{$server_tag}
             && is_thread_alias($server_tag, $explicit_tid, $PENDING_TID{$server_tag});
@@ -483,7 +484,7 @@ sub signal_message_public {
             delete $PENDING_SINCE{$server_tag};
         }
 
-        # Track pending incident ID from URL, table row, or wrapped bare ID
+        # Track pending incident ID from a URL, table row, or status-bearing line
         if ($recognized_pd_id && $clean_msg !~ /Alert ID/) {
             if ($PENDING_PD_ID{$server_tag} && $PENDING_PD_ID{$server_tag} ne $recognized_pd_id) {
                 $tid = $PENDING_TID{$server_tag} = undef unless $explicit_tid;
@@ -520,9 +521,9 @@ sub signal_message_public {
             $PENDING_PD_ID{$server_tag} = undef;
             $PENDING_TID{$server_tag}   = undef;
         }
-        elsif ($PENDING_PD_ID{$server_tag} && $clean_msg =~ /($status_pattern)/ && $clean_msg !~ /✅ RESOLVED/) {
+        elsif ($PENDING_PD_ID{$server_tag} && $message_status && $message_status !~ /✅ RESOLVED/) {
             $pd_id = $PENDING_PD_ID{$server_tag};
-            $raw_status = $1;
+            $raw_status = $message_status;
             $PD_STATUS{$server_tag}{$pd_id} = ($raw_status =~ /UNACKNOWLEDGED/) ? '‼️ UNACKNOWLEDGED' : $raw_status;
             set_thread_pd_map($server_tag, $tid, $pd_id);
             $PENDING_PD_ID{$server_tag} = undef;
