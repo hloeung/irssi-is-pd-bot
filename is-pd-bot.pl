@@ -227,10 +227,10 @@ sub set_thread_pd_map {
     return unless $server_tag && $tid && $pd_id;
     my $prev_pd_id = $THREAD_PD_MAP{$server_tag}{$tid};
 
-    # Ensure each incident ID maps to only one thread per server
-    if (exists $THREAD_PD_MAP{$server_tag}) {
+    # If tid is canonical, upgrade any unexpanded shorter prefix stored for this incident
+    if (is_canonical_tid($tid) && exists $THREAD_PD_MAP{$server_tag}) {
         for my $k (keys %{$THREAD_PD_MAP{$server_tag}}) {
-            if ($k ne $tid && $THREAD_PD_MAP{$server_tag}{$k} eq $pd_id) {
+            if ($k ne $tid && index($tid, $k) == 0 && $THREAD_PD_MAP{$server_tag}{$k} eq $pd_id) {
                 delete $THREAD_PD_MAP{$server_tag}{$k};
             }
         }
@@ -479,14 +479,17 @@ sub signal_message_public {
         my ($table_pd_id) = $message_content =~ /\A(?:🮇|\|)\s*((?:P[A-Z0-9]{6}|Q[A-Z0-9]{13}))\b/;
         my ($status_pd_id, $raw_status) = $message_content =~ /((?:P[A-Z0-9]{6}|Q[A-Z0-9]{13}))\s+.*?($status_pattern)/;
         my ($message_status) = $message_content =~ /($status_pattern)/;
-        my $recognized_pd_id = $status_pd_id || $table_pd_id || $url_pd_id;
+        my $thread_pd_id;
+        $thread_pd_id = $1 if $explicit_tid
+            && $message_content =~ /\A((?:P[A-Z0-9]{6}|Q[A-Z0-9]{13}))\b/;
+        my $recognized_pd_id = $status_pd_id || $table_pd_id || $url_pd_id || $thread_pd_id;
         my $has_pd_id = defined $recognized_pd_id;
         my $has_status = defined $message_status;
         my $has_table_marker = $message_content =~ /\A(?:🮇|\|)/;
         my $same_thread = $explicit_tid && $PENDING_TID{$server_tag}
             && is_thread_alias($server_tag, $explicit_tid, $PENDING_TID{$server_tag});
         if ($PENDING_PD_ID{$server_tag} && !$has_pd_id
-            && (!$has_table_marker || !$has_status) && !$same_thread) {
+            && !$has_table_marker && !$same_thread) {
             $PENDING_PD_ID{$server_tag} = undef;
             $PENDING_TID{$server_tag} = undef;
             delete $PENDING_SINCE{$server_tag};
