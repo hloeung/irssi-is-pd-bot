@@ -459,9 +459,14 @@ sub signal_message_public {
             $tid = $PENDING_TID{$server_tag};
         }
 
-        if ($PENDING_PD_ID{$server_tag}
-            && $clean_msg !~ /(?:P[A-Z0-9]{6}|Q[A-Z0-9]{13})/
-            && $clean_msg !~ /(?:✅ RESOLVED|🚨 TRIGGERED|🆗 ACKNOWLEDGED|(?:‼|‼️|!!) UNACKNOWLEDGED|📤 ESCALATED|📥 (?:RE)?ASSIGNED|💤 SNOOZED)/) {
+        my $has_pd_id = $clean_msg =~ /(?:incidents\/|[🮇\|]\s*|\b)(?:P[A-Z0-9]{6}|Q[A-Z0-9]{13})\b/
+            && $clean_msg !~ /Alert ID/;
+        my $has_status = $clean_msg =~ /(?:✅ RESOLVED|🚨 TRIGGERED|🆗 ACKNOWLEDGED|(?:‼|‼️|!!) UNACKNOWLEDGED|📤 ESCALATED|📥 (?:RE)?ASSIGNED|💤 SNOOZED)/;
+        my $has_table_marker = $clean_msg =~ /[🮇|]/;
+        my $same_thread = $explicit_tid && $PENDING_TID{$server_tag}
+            && is_thread_alias($server_tag, $explicit_tid, $PENDING_TID{$server_tag});
+        if ($PENDING_PD_ID{$server_tag} && !$has_pd_id
+            && (!$has_table_marker || !$has_status) && !$same_thread) {
             $PENDING_PD_ID{$server_tag} = undef;
             $PENDING_TID{$server_tag} = undef;
             delete $PENDING_SINCE{$server_tag};
