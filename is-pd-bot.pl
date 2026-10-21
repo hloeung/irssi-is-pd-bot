@@ -308,7 +308,8 @@ sub signal_message_public {
         }
         $tid = resolve_thread_id($target, $tid) if $tid;
         # Explicit prefixes can outlive pending continuations; only expand a unique full ID.
-        if ($tid && !is_canonical_tid($tid) && exists $THREAD_PD_MAP{$server_tag}) {
+        if ($tid && !is_canonical_tid($tid) && exists $THREAD_PD_MAP{$server_tag}
+            && !exists $THREAD_PD_MAP{$server_tag}{$tid}) {
             my @matches = grep {
                 is_canonical_tid($_) && index($_, $tid) == 0
             } keys %{$THREAD_PD_MAP{$server_tag}};
