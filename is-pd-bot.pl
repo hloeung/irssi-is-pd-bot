@@ -250,7 +250,7 @@ sub cmd_pagerduty_cache_dump {
             my $short_t = short_thread_id($t);
             my $pd_id = $THREAD_PD_MAP{$server_tag}{$t};
             my $status_str = (exists $PD_STATUS{$server_tag}{$pd_id} && length $PD_STATUS{$server_tag}{$pd_id}) ? " ($PD_STATUS{$server_tag}{$pd_id})" : "";
-            _wi_print($wi, "${col}[${short_t}]\x0f -> $pd_id$status_str");
+            _wi_print($wi, "${col}[${short_t}]\x0f ➜ $pd_id$status_str");
         }
     } else {
         _wi_print($wi, 'Empty PagerDuty incidents in cache, see ' . $pd_url);
@@ -268,9 +268,26 @@ sub cmd_pagerduty_cache_dump_active {
     if (scalar(@$cache) == 0) {
         _wi_print($wi, 'Empty active PagerDuty incidents in cache, see ' . $pd_url);
     } else {
-        foreach my $pd_id (@$cache) {
+        my @items = @$cache;
+        my ($limit) = $data =~ /(\d+)/;
+        if ($limit && $limit > 0 && @items > $limit) {
+            splice(@items, $limit);
+        }
+        @items = reverse @items;
+
+        _wi_print($wi, 'Active PagerDuty incidents:');
+        foreach my $pd_id (@items) {
             my $status_str = (exists $PD_STATUS{$server_tag}{$pd_id} && length $PD_STATUS{$server_tag}{$pd_id}) ? " ($PD_STATUS{$server_tag}{$pd_id})" : "";
-            _wi_print($wi, $pd_id . $status_str . ' - ' . $pd_url . $pd_id);
+            my $thread_prefix = '—';
+            if ($server_tag && exists $THREAD_PD_MAP{$server_tag}) {
+                my ($t) = grep { $THREAD_PD_MAP{$server_tag}{$_} eq $pd_id } reverse @{$THREAD_PD_ORDER{$server_tag} // []};
+                if ($t) {
+                    my $col = thread_color($t);
+                    my $short_t = short_thread_id($t);
+                    $thread_prefix = "${col}[${short_t}]\x0f ➜ ";
+                }
+            }
+            _wi_print($wi, "${thread_prefix}$pd_id$status_str ➜ $pd_url$pd_id");
         }
     }
 };
