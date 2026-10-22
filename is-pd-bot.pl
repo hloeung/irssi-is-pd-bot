@@ -392,7 +392,8 @@ sub cmd_pagerduty_cache_clear {
 
     _wi_print($wi, @removed ? 'Cleared ' . scalar(@removed) . ' PagerDuty incident(s).' : 'No cached PagerDuty incidents matched.');
 };
-Irssi::command_bind('pagerduty_cache_clear', 'cmd_pagerduty_cache_clear');
+# Using _purge instead of _clear to avoid accidentally clearing on first tab-completion.
+Irssi::command_bind('pagerduty_cache_purge', 'cmd_pagerduty_cache_clear');
 
 sub signal_message_public {
     my ($server, $msg, $nick, $address, $target) = @_;
