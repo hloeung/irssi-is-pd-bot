@@ -24,6 +24,8 @@ Irssi::settings_add_str('is_pd_bot', 'is_pd_bot_pagerduty_channel', 'is-pagerdut
 Irssi::settings_add_str('is_pd_bot', 'is_pd_bot_pagerduty_url', 'https://canonical.pagerduty.com/incidents/');
 Irssi::settings_add_int('is_pd_bot', 'is_pd_bot_pagerduty_cache_size', 20);
 Irssi::settings_add_int('is_pd_bot', 'pagerduty_cache_size', -1);
+Irssi::settings_add_bool('is_pd_bot', 'is_pd_bot_rejoin_urls', 1);
+Irssi::settings_add_int('is_pd_bot', 'is_pd_bot_rejoin_timeout', 500);
 
 sub get_pagerduty_cache_size {
     my $legacy = Irssi::settings_get_int('pagerduty_cache_size');
@@ -395,12 +397,74 @@ sub cmd_pagerduty_cache_clear {
 # Using _purge instead of _clear to avoid accidentally clearing on first tab-completion.
 Irssi::command_bind('pagerduty_cache_purge', 'cmd_pagerduty_cache_clear');
 
+my %REJOIN_BUFFER;
+our $REJOINING = 0;
+
+sub _is_line_open {
+    my ($s) = @_;
+    $s =~ s/\x03(?:\d{1,2}(?:,\d{1,2})?)?//g;
+    $s =~ s/[\x02\x04\x0f\x11\x16\x1d\x1e\x1f]//g;
+    return 1 if $s =~ /\(https?:\/\/[^\s)]*$/ || $s =~ /\(\s*$/;
+    return 1 if $s =~ /(?:➥|\xE2\x9E\xA5)[^()]*$/ && $s !~ /https?:\/\//;
+    return 1 if length($s) >= 350 && $s =~ /(?:^|\s)https?:\/\/\S+$/;
+    return 0;
+}
+
+sub _join_messages {
+    my ($prev, $curr) = @_;
+    my $sep = ($prev =~ m{(?:https?://\S*|\()\z} || $prev =~ /\s\z/) ? '' : ' ';
+    return $prev . $sep . $curr;
+}
+
+sub timer_rejoin_flush {
+    my ($key) = @_;
+    my $st = delete $REJOIN_BUFFER{$key} or return;
+    $st->{timer} = undef;
+    local $REJOINING = 1;
+    Irssi::signal_emit('message public', $st->{server}, $st->{msg}, $st->{nick}, $st->{address}, $st->{target});
+}
+
 sub signal_message_public {
     my ($server, $msg, $nick, $address, $target) = @_;
 
     return unless $server && defined($msg) && defined($nick) && defined($target) && chatnet_enabled($server);
     my $bot_nick = ($BOT_NICK //= Irssi::settings_get_str('is_pd_bot_nick'));
     return unless lc($nick) eq lc($bot_nick);
+
+    if (Irssi::settings_get_bool('is_pd_bot_rejoin_urls') && !$REJOINING) {
+        my $key = ($server->{tag} // '') . '/' . lc($target);
+        my $st = $REJOIN_BUFFER{$key};
+
+        # If waiting on an open line and current message is not a new post/header, stitch them
+        if ($st && $msg !~ /^\s*(?:\[|\xF0\x9F\xAE\x87|🮇|\|)/) {
+            Irssi::timeout_remove($st->{timer}) if defined $st->{timer};
+            $msg = _join_messages($st->{msg}, $msg);
+            delete $REJOIN_BUFFER{$key};
+            unless (_is_line_open($msg)) {
+                local $REJOINING = 1;
+                Irssi::signal_emit('message public', $server, $msg, $nick, $address, $target);
+                Irssi::signal_stop();
+                return;
+            }
+        } elsif ($st) {
+            Irssi::timeout_remove($st->{timer}) if defined $st->{timer};
+            timer_rejoin_flush($key);
+        }
+
+        if (_is_line_open($msg)) {
+            my $ms = Irssi::settings_get_int('is_pd_bot_rejoin_timeout') || 500;
+            $REJOIN_BUFFER{$key} = {
+                server  => $server,
+                msg     => $msg,
+                nick    => $nick,
+                address => $address,
+                target  => $target,
+                timer   => Irssi::timeout_add_once($ms, 'timer_rejoin_flush', $key),
+            };
+            Irssi::signal_stop();
+            return;
+        }
+    }
 
     my $pagerduty_channel = get_pagerduty_channel();
     my $server_tag = $server->{tag};
@@ -574,6 +638,15 @@ sub signal_message_public {
     }
 };
 Irssi::signal_add_first('message public', 'signal_message_public');
+Irssi::signal_add('server disconnected', sub {
+    my ($server) = @_;
+    return unless $server && defined $server->{tag};
+    my $pfx = $server->{tag} . '/';
+    for my $k (grep { index($_, $pfx) == 0 } keys %REJOIN_BUFFER) {
+        my $st = delete $REJOIN_BUFFER{$k};
+        Irssi::timeout_remove($st->{timer}) if $st && $st->{timer};
+    }
+});
 
 # Tab auto-completion for PagerDuty incident IDs in cache
 sub signal_complete_word_pagerduty {
