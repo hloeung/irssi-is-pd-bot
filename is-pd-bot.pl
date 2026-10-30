@@ -406,7 +406,7 @@ sub _is_line_open {
     $s =~ s/[\x02\x04\x0f\x11\x16\x1d\x1e\x1f]//g;
     return 1 if $s =~ /\(https?:\/\/[^\s)]*$/ || $s =~ /\(\s*$/;
     return 1 if $s =~ /(?:➥|\xE2\x9E\xA5)[^()]*$/ && $s !~ /https?:\/\//;
-    return 1 if length($s) >= 350 && $s =~ /https?:\/\/\S+$/;
+    return 1 if length($s) >= 350 && $s =~ /(?:^|\s)https?:\/\/\S+$/;
     return 0;
 }
 
@@ -440,7 +440,14 @@ sub signal_message_public {
             Irssi::timeout_remove($st->{timer}) if defined $st->{timer};
             $msg = _join_messages($st->{msg}, $msg);
             delete $REJOIN_BUFFER{$key};
+            unless (_is_line_open($msg)) {
+                local $REJOINING = 1;
+                Irssi::signal_emit('message public', $server, $msg, $nick, $address, $target);
+                Irssi::signal_stop();
+                return;
+            }
         } elsif ($st) {
+            Irssi::timeout_remove($st->{timer}) if defined $st->{timer};
             timer_rejoin_flush($key);
         }
 
