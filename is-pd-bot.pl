@@ -24,8 +24,6 @@ Irssi::settings_add_str('is_pd_bot', 'is_pd_bot_pagerduty_channel', 'is-pagerdut
 Irssi::settings_add_str('is_pd_bot', 'is_pd_bot_pagerduty_url', 'https://canonical.pagerduty.com/incidents/');
 Irssi::settings_add_int('is_pd_bot', 'is_pd_bot_pagerduty_cache_size', 20);
 Irssi::settings_add_int('is_pd_bot', 'pagerduty_cache_size', -1);
-Irssi::settings_add_bool('is_pd_bot', 'is_pd_bot_rejoin_urls', 1);
-Irssi::settings_add_int('is_pd_bot', 'is_pd_bot_rejoin_timeout', 500);
 
 sub get_pagerduty_cache_size {
     my $legacy = Irssi::settings_get_int('pagerduty_cache_size');
@@ -416,6 +414,15 @@ sub _join_messages {
     return $prev . $sep . $curr;
 }
 
+Irssi::settings_add_bool('is_pd_bot', 'is_pd_bot_rejoin_urls', 1);
+Irssi::settings_add_int('is_pd_bot', 'is_pd_bot_rejoin_timeout', 500);
+
+Irssi::settings_add_bool('is_pd_bot', 'is_pd_bot_compact_format', 0);
+Irssi::settings_add_int('is_pd_bot', 'is_pd_bot_compact_timeout', 500);
+
+my %COMPACT_BUFFER;
+our $COMPACT_EMITTING = 0;
+
 sub timer_rejoin_flush {
     my ($key) = @_;
     my $st = delete $REJOIN_BUFFER{$key} or return;
@@ -427,6 +434,7 @@ sub timer_rejoin_flush {
 sub signal_message_public {
     my ($server, $msg, $nick, $address, $target) = @_;
 
+    return if $COMPACT_EMITTING;
     return unless $server && defined($msg) && defined($nick) && defined($target) && chatnet_enabled($server);
     my $bot_nick = ($BOT_NICK //= Irssi::settings_get_str('is_pd_bot_nick'));
     return unless lc($nick) eq lc($bot_nick);
@@ -636,6 +644,33 @@ sub signal_message_public {
             }
         }
     }
+
+    # Compact format buffering
+    if (Irssi::settings_get_bool('is_pd_bot_compact_format')) {
+        my $key = ($server->{tag} // '') . '/' . lc($target);
+        my $is_block = ($msg =~ /(?:🮇|\||\xF0\x9F\xAE\x87)/) ? 1 : 0;
+        my $st = $COMPACT_BUFFER{$key};
+
+        if ($st && $is_block) {
+            push @{$st->{lines}}, $msg;
+        } else {
+            compact_timer_flush($key) if $st;
+            $COMPACT_BUFFER{$key} = {
+                server  => $server,
+                nick    => $nick,
+                address => $address,
+                target  => $target,
+                lines   => [$msg],
+            };
+        }
+
+        Irssi::timeout_remove($COMPACT_BUFFER{$key}->{timer}) if defined $COMPACT_BUFFER{$key}->{timer};
+        my $ms = Irssi::settings_get_int('is_pd_bot_compact_timeout') || 500;
+        $COMPACT_BUFFER{$key}->{timer} = Irssi::timeout_add_once($ms, 'compact_timer_flush', $key);
+
+        Irssi::signal_stop();
+        return;
+    }
 };
 Irssi::signal_add_first('message public', 'signal_message_public');
 Irssi::signal_add('server disconnected', sub {
@@ -646,7 +681,89 @@ Irssi::signal_add('server disconnected', sub {
         my $st = delete $REJOIN_BUFFER{$k};
         Irssi::timeout_remove($st->{timer}) if $st && $st->{timer};
     }
+    for my $k (grep { index($_, $pfx) == 0 } keys %COMPACT_BUFFER) {
+        my $st = delete $COMPACT_BUFFER{$k};
+        Irssi::timeout_remove($st->{timer}) if $st && $st->{timer};
+    }
 });
+
+sub _compact_format_card {
+    my ($lines) = @_;
+    my ($main, @block_lines);
+    foreach my $l (@$lines) {
+        if ($l =~ /(?:🮇|\||\xF0\x9F\xAE\x87)/) {
+            push @block_lines, $l;
+        } elsif (!$main) {
+            $main = $l;
+        }
+    }
+    return @$lines unless @block_lines;
+
+    my ($tag, $pd_url, $desc) = ('', '', '');
+    if ($main) {
+        my $m = $main;
+        $m =~ s/\s*\(re\s*\@.*?\)\s*$//;
+        $tag = $1 if $m =~ s/^(\[(?:->|↪)?(?:\@\@)?[^\]]+\])\s*//;
+        $pd_url = $1 if $m =~ s/\s*\((https?:\/\/[^\s()]+)\)\s*$//;
+        $desc = $m;
+        $desc =~ s/^\s+|\s+$//g;
+    }
+
+    my ($alert_id, $status, $assignee) = ('', '', '');
+    my @links;
+    my $in_row = 0;
+
+    foreach my $bl (@block_lines) {
+        my $t = $bl;
+        $t =~ s/^\s*\[(?:->|↪)?(?:\@\@)?[^\]]+\]\s*//;
+        $t =~ s/^\s*(?:🮇|\||\xF0\x9F\xAE\x87)\s*//;
+        $t =~ s/\s*\(re\s*\@.*?\)\s*$//;
+        $t =~ s/^\s+|\s+$//g;
+
+        if ($t =~ /^Alert ID\s{2,}/) {
+            $in_row = 1;
+            next;
+        }
+        if ($in_row) {
+            my @parts = split(/\s{2,}/, $t);
+            if (@parts >= 2) {
+                $alert_id = $parts[0];
+                $status   = $parts[1];
+                $assignee = $parts[2] // '';
+                $assignee =~ s/^\@\s*//;
+                $assignee = '' if $assignee eq '[unknown to me]';
+            }
+            $in_row = 0;
+            next;
+        }
+        if ($t =~ /(?:➥|\xE2\x9E\xA5)\s*(.*?)\s*\((https?:\/\/[^\s()]+)\)/) {
+            push @links, { label => $1, url => $2 };
+        }
+    }
+
+    my @out;
+    my $first = join(' ', grep { length($_) } ($tag, $status, $alert_id, $desc));
+    $first .= " @ $assignee" if length($assignee);
+    push @out, $first if length($first);
+
+    my $pfx = length($tag) ? "$tag " : "";
+    my $bar = "🮇  ";
+    push @out, "${pfx}${bar}➥ PagerDuty ($pd_url)" if length($pd_url);
+    push @out, "${pfx}${bar}➥ $_->{label} ($_->{url})" foreach @links;
+
+    return @out;
+}
+
+sub compact_timer_flush {
+    my ($key) = @_;
+    my $st = delete $COMPACT_BUFFER{$key} or return;
+    Irssi::timeout_remove($st->{timer}) if defined $st->{timer};
+    my @lines = _compact_format_card($st->{lines});
+    local $COMPACT_EMITTING = 1;
+    foreach my $l (@lines) {
+        Irssi::signal_emit('message public', $st->{server}, $l, $st->{nick}, $st->{address}, $st->{target});
+    }
+}
 
 # Tab auto-completion for PagerDuty incident IDs in cache
 sub signal_complete_word_pagerduty {
