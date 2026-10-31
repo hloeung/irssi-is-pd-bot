@@ -418,7 +418,7 @@ sub _is_line_open {
     my ($s) = @_;
     my $t = _clean_text($s);
     return 1 if $t =~ /\(https?:\/\/[^\s)]*$/ || $t =~ /\(\s*$/;
-    return 1 if $t =~ /(?:➥|\xE2\x9E\xA5)[^()]*$/ && $t !~ /https?:\/\//;
+    return 1 if $t =~ /(?:➥|\xE2\x9E\xA5|[-•*])\s+[A-Za-z][^()]*$/ && $t !~ /https?:\/\//;
     return 1 if length($t) >= 350 && $t =~ /(?:^|\s)https?:\/\/\S+$/;
     return 0;
 }
@@ -437,6 +437,8 @@ sub timer_rejoin_flush {
     Irssi::signal_emit('message public', $st->{server}, $st->{msg}, $st->{nick}, $st->{address}, $st->{target});
 }
 
+my $FMT_RE = qr/(?:[\x02\x04\x0f\x11\x16\x1d\x1e\x1f]|\x03(?:\d{1,2}(?:,\d{1,2})?)?)*/;
+
 sub _compact_format_card {
     my ($lines) = @_;
     my ($main, @block_lines);
@@ -449,57 +451,98 @@ sub _compact_format_card {
     }
     return @$lines unless @block_lines;
 
+    # Extract thread tag with its native color, description, and PagerDuty URL
     my ($tag, $pd_url, $desc) = ('', '', '');
     if ($main) {
-        my $m = _clean_text($main);
+        my $m = $main;
         $m =~ s/\s*\(re\s*\@.*?\)\s*$//;
-        $tag    = $1 if $m =~ s/^(\[(?:->|↪)?(?:\@\@)?[^\]]+\])\s*//;
-        $pd_url = $1 if $m =~ s/\s*\((https?:\/\/[^\s()]+)\)\s*$//;
+        $m =~ s/(?:\xc2\xa0|\x{a0})/ /g;
+        if ($m =~ s/^($FMT_RE\[(?:->|↪)?(?:\@\@)?[^\]]+\]$FMT_RE)\s*//) {
+            $tag = $1;
+        }
+        if ($m =~ s/\s*\((https?:\/\/[^\s()]+)\)\s*$//) {
+            $pd_url = $1;
+        }
         $m =~ s/^\s+|\s+$//g;
         $desc = $m;
     }
 
+    # Extract colored bar from the first block line (preserves red, yellow, green, or blue pipe)
+    my $bar = " | ";
+    if (@block_lines && $block_lines[0] =~ /(?:^|$FMT_RE\[[^\]]+\]$FMT_RE\s*)($FMT_RE)\s*(🮇|\||\xF0\x9F\xAE\x87)/) {
+        my ($col, $char) = ($1 // '', $2 // '|');
+        $bar = ($char eq '|') ? "${col} | \x0f" : "${col}${char}\x0f ";
+    }
+
+    # 3. Parse table rows and action links
     my ($alert_id, $status, $assignee) = ('', '', '');
     my @links;
     my $in_row = 0;
 
     foreach my $bl (@block_lines) {
-        my $t = _clean_text($bl);
-        $t =~ s/^\s*\[(?:->|↪)?(?:\@\@)?[^\]]+\]\s*//;
-        $t =~ s/^\s*(?:🮇|\||\xF0\x9F\xAE\x87)\s*//;
-        $t =~ s/\s*\(re\s*\@.*?\)\s*$//;
-        $t =~ s/^\s+|\s+$//g;
+        my $content = $bl;
+        # Strip thread tag and bar while accounting for color escapes
+        $content =~ s/^$FMT_RE\[(?:->|↪)?(?:\@\@)?[^\]]+\]$FMT_RE\s*//;
+        $content =~ s/^$FMT_RE\s*(?:🮇|\||\xF0\x9F\xAE\x87)$FMT_RE\s*//;
 
-        if ($t =~ /^Alert ID\s{2,}/) {
+        my $suffix = '';
+        if ($content =~ s/\s*(\(re\s*\@.*?\))\s*$//) {
+            $suffix = " $1";
+        }
+
+        # Normalize non-breaking spaces for column splitting
+        $content =~ s/(?:\xc2\xa0|\x{a0})/ /g;
+        $content =~ s/^\s+|\s+$//g;
+
+        # Plain text copy used solely for header/row pattern matching
+        my $clean = $content;
+        $clean =~ s/\x03(?:\d{1,2}(?:,\d{1,2})?)?//g;
+        $clean =~ s/[\x02\x04\x0f\x11\x16\x1d\x1e\x1f]//g;
+
+        if ($clean =~ /^Alert ID\s{2,}/) {
             $in_row = 1;
             next;
         }
         if ($in_row) {
-            my @parts = split(/\s{2,}/, $t);
+            my @parts = split(/\s{2,}/, $content);
             if (@parts >= 2) {
-                $alert_id = $parts[0];
-                $status   = $parts[1];
-                $assignee = $parts[2] // '';
-                $assignee =~ s/^\@\s*//;
-                $assignee = '' if $assignee eq '[unknown to me]';
+                my $aid = $parts[0];
+                $aid =~ s/\x03(?:\d{1,2}(?:,\d{1,2})?)?//g;
+                $aid =~ s/[\x02\x04\x0f\x11\x16\x1d\x1e\x1f]//g;
+                $alert_id = $aid;
+
+                # Preserves status with native IRC color and bold formatting
+                $status = $parts[1];
+
+                if (@parts >= 3) {
+                    my $asn = $parts[2];
+                    $asn =~ s/\x03(?:\d{1,2}(?:,\d{1,2})?)?//g;
+                    $asn =~ s/[\x02\x04\x0f\x11\x16\x1d\x1e\x1f]//g;
+                    $asn =~ s/^\@\s*//;
+                    $assignee = ($asn ne '[unknown to me]') ? $asn : '';
+                }
             }
             $in_row = 0;
             next;
         }
-        if ($t =~ /(?:➥|\xE2\x9E\xA5)\s*(.*?)\s*\((https?:\/\/[^\s()]+)\)/) {
-            push @links, { label => $1, url => $2 };
+
+        # Matches both '-' (matterircd format) and '➥' action bullets, preserving label formatting
+        if ($content =~ /(?:➥|\xE2\x9E\xA5|[-•*])\s*(.*?)\s*\((https?:\/\/[^\s()]+)\)/) {
+            push @links, { label => $1, url => $2, suffix => $suffix };
         }
     }
 
+    # Construct compact output lines
     my @out;
     my $first = join(' ', grep { length($_) } ($tag, $status, $alert_id, $desc));
     $first .= " @ $assignee" if length($assignee);
     push @out, $first if length($first);
 
     my $pfx = length($tag) ? "$tag " : "";
-    my $bar = "🮇  ";
     push @out, "${pfx}${bar}➥ PagerDuty ($pd_url)" if length($pd_url);
-    push @out, "${pfx}${bar}➥ $_->{label} ($_->{url})" foreach @links;
+    foreach my $l (@links) {
+        push @out, "${pfx}${bar}➥ $l->{label} ($l->{url})$l->{suffix}";
+    }
 
     return @out;
 }
@@ -523,6 +566,10 @@ sub signal_message_public {
     return unless $server && defined($msg) && defined($nick) && defined($target) && chatnet_enabled($server);
     my $bot_nick = ($BOT_NICK //= Irssi::settings_get_str('is_pd_bot_nick'));
     return unless lc($nick) eq lc($bot_nick);
+
+    # Ensure rejoin, cache, and compact only process in the configured pagerduty channel
+    my $pagerduty_channel = get_pagerduty_channel();
+    return unless lc($target) eq lc($pagerduty_channel);
 
     my $key = ($server->{tag} // '') . '/' . lc($target);
 
@@ -562,7 +609,6 @@ sub signal_message_public {
     }
 
     # Core is-pd-bot incident caching (operates on complete lines)
-    my $pagerduty_channel = get_pagerduty_channel();
     my $server_tag = $server->{tag};
 
     if (lc($target) eq lc($pagerduty_channel)) {
@@ -771,84 +817,6 @@ Irssi::signal_add('server disconnected', sub {
         }
     }
 });
-
-sub _compact_format_card {
-    my ($lines) = @_;
-    my ($main, @block_lines);
-    foreach my $l (@$lines) {
-        if ($l =~ /(?:🮇|\||\xF0\x9F\xAE\x87)/) {
-            push @block_lines, $l;
-        } elsif (!$main) {
-            $main = $l;
-        }
-    }
-    return @$lines unless @block_lines;
-
-    my ($tag, $pd_url, $desc) = ('', '', '');
-    if ($main) {
-        my $m = $main;
-        $m =~ s/\s*\(re\s*\@.*?\)\s*$//;
-        $tag = $1 if $m =~ s/^(\[(?:->|↪)?(?:\@\@)?[^\]]+\])\s*//;
-        $pd_url = $1 if $m =~ s/\s*\((https?:\/\/[^\s()]+)\)\s*$//;
-        $desc = $m;
-        $desc =~ s/^\s+|\s+$//g;
-    }
-
-    my ($alert_id, $status, $assignee) = ('', '', '');
-    my @links;
-    my $in_row = 0;
-
-    foreach my $bl (@block_lines) {
-        my $t = $bl;
-        $t =~ s/^\s*\[(?:->|↪)?(?:\@\@)?[^\]]+\]\s*//;
-        $t =~ s/^\s*(?:🮇|\||\xF0\x9F\xAE\x87)\s*//;
-        $t =~ s/\s*\(re\s*\@.*?\)\s*$//;
-        $t =~ s/^\s+|\s+$//g;
-
-        if ($t =~ /^Alert ID\s{2,}/) {
-            $in_row = 1;
-            next;
-        }
-        if ($in_row) {
-            my @parts = split(/\s{2,}/, $t);
-            if (@parts >= 2) {
-                $alert_id = $parts[0];
-                $status   = $parts[1];
-                $assignee = $parts[2] // '';
-                $assignee =~ s/^\@\s*//;
-                $assignee = '' if $assignee eq '[unknown to me]';
-            }
-            $in_row = 0;
-            next;
-        }
-        if ($t =~ /(?:➥|\xE2\x9E\xA5)\s*(.*?)\s*\((https?:\/\/[^\s()]+)\)/) {
-            push @links, { label => $1, url => $2 };
-        }
-    }
-
-    my @out;
-    my $first = join(' ', grep { length($_) } ($tag, $status, $alert_id, $desc));
-    $first .= " @ $assignee" if length($assignee);
-    push @out, $first if length($first);
-
-    my $pfx = length($tag) ? "$tag " : "";
-    my $bar = "🮇  ";
-    push @out, "${pfx}${bar}➥ PagerDuty ($pd_url)" if length($pd_url);
-    push @out, "${pfx}${bar}➥ $_->{label} ($_->{url})" foreach @links;
-
-    return @out;
-}
-
-sub compact_timer_flush {
-    my ($key) = @_;
-    my $st = delete $COMPACT_BUFFER{$key} or return;
-    Irssi::timeout_remove($st->{timer}) if defined $st->{timer};
-    my @lines = _compact_format_card($st->{lines});
-    local $COMPACT_EMITTING = 1;
-    foreach my $l (@lines) {
-        Irssi::signal_emit('message public', $st->{server}, $l, $st->{nick}, $st->{address}, $st->{target});
-    }
-}
 
 # Tab auto-completion for PagerDuty incident IDs in cache
 sub signal_complete_word_pagerduty {
