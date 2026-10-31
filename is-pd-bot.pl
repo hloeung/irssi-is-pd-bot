@@ -451,7 +451,7 @@ sub _compact_format_card {
     }
     return @$lines unless @block_lines;
 
-    # Extract thread tag with its native color, description, and PagerDuty URL
+    # Main line: extract colored thread tag, description, and PagerDuty URL
     my ($tag, $pd_url, $desc) = ('', '', '');
     if ($main) {
         my $m = $main;
@@ -469,12 +469,13 @@ sub _compact_format_card {
 
     # Extract colored bar from the first block line (preserves red, yellow, green, or blue pipe)
     my $bar = " | ";
-    if (@block_lines && $block_lines[0] =~ /(?:^|$FMT_RE\[[^\]]+\]$FMT_RE\s*)($FMT_RE)\s*(🮇|\||\xF0\x9F\xAE\x87)/) {
-        my ($col, $char) = ($1 // '', $2 // '|');
-        $bar = ($char eq '|') ? "${col} | \x0f" : "${col}${char}\x0f ";
+    if (@block_lines && $block_lines[0] =~ /(?:^|$FMT_RE\[[^\]]+\]$FMT_RE\s*)($FMT_RE\s*(?:🮇|\||\xF0\x9F\xAE\x87)$FMT_RE\s*)/) {
+        $bar = $1;
+        $bar =~ s/\s+$//;
+        $bar .= "\x0f ";
     }
 
-    # 3. Parse table rows and action links
+    # Parse table rows and action links
     my ($alert_id, $status, $assignee) = ('', '', '');
     my @links;
     my $in_row = 0;
@@ -490,11 +491,11 @@ sub _compact_format_card {
             $suffix = " $1";
         }
 
-        # Normalize non-breaking spaces for column splitting
+        # Normalize non-breaking spaces
         $content =~ s/(?:\xc2\xa0|\x{a0})/ /g;
         $content =~ s/^\s+|\s+$//g;
 
-        # Plain text copy used solely for header/row pattern matching
+        # Plain text copy for pattern matching
         my $clean = $content;
         $clean =~ s/\x03(?:\d{1,2}(?:,\d{1,2})?)?//g;
         $clean =~ s/[\x02\x04\x0f\x11\x16\x1d\x1e\x1f]//g;
@@ -511,7 +512,6 @@ sub _compact_format_card {
                 $aid =~ s/[\x02\x04\x0f\x11\x16\x1d\x1e\x1f]//g;
                 $alert_id = $aid;
 
-                # Preserves status with native IRC color and bold formatting
                 $status = $parts[1];
 
                 if (@parts >= 3) {
@@ -526,13 +526,13 @@ sub _compact_format_card {
             next;
         }
 
-        # Matches both '-' (matterircd format) and '➥' action bullets, preserving label formatting
+        # Match action bullets: matches '-' (matterircd), '➥', and bullet points
         if ($content =~ /(?:➥|\xE2\x9E\xA5|[-•*])\s*(.*?)\s*\((https?:\/\/[^\s()]+)\)/) {
             push @links, { label => $1, url => $2, suffix => $suffix };
         }
     }
 
-    # Construct compact output lines
+    # Construct output
     my @out;
     my $first = join(' ', grep { length($_) } ($tag, $status, $alert_id, $desc));
     $first .= " @ $assignee" if length($assignee);
@@ -567,7 +567,7 @@ sub signal_message_public {
     my $bot_nick = ($BOT_NICK //= Irssi::settings_get_str('is_pd_bot_nick'));
     return unless lc($nick) eq lc($bot_nick);
 
-    # Ensure rejoin, cache, and compact only process in the configured pagerduty channel
+    # Restrict rejoin, caching, and compact view to the configured pagerduty channel only
     my $pagerduty_channel = get_pagerduty_channel();
     return unless lc($target) eq lc($pagerduty_channel);
 
