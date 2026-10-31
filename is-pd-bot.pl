@@ -518,13 +518,16 @@ sub compact_timer_flush {
 sub signal_message_public {
     my ($server, $msg, $nick, $address, $target) = @_;
 
+    # Allow compact re-emitted lines to pass straight through to Irssi display
     return if $COMPACT_EMITTING;
     return unless $server && defined($msg) && defined($nick) && defined($target) && chatnet_enabled($server);
     my $bot_nick = ($BOT_NICK //= Irssi::settings_get_str('is_pd_bot_nick'));
     return unless lc($nick) eq lc($bot_nick);
 
+    my $key = ($server->{tag} // '') . '/' . lc($target);
+
+    # Line Healing (Rejoin split URLs and action bullets)
     if (Irssi::settings_get_bool('is_pd_bot_rejoin_urls') && !$REJOINING) {
-        my $key = ($server->{tag} // '') . '/' . lc($target);
         my $st = $REJOIN_BUFFER{$key};
 
         # If waiting on an open line and current message is not a new post/header, stitch them
@@ -558,6 +561,7 @@ sub signal_message_public {
         }
     }
 
+    # Core is-pd-bot incident caching (operates on complete lines)
     my $pagerduty_channel = get_pagerduty_channel();
     my $server_tag = $server->{tag};
 
@@ -729,9 +733,8 @@ sub signal_message_public {
         }
     }
 
-    # Compact format buffering
+    # Presentation Layer (Buffer card if compact format enabled)
     if (Irssi::settings_get_bool('is_pd_bot_compact_format')) {
-        my $key = ($server->{tag} // '') . '/' . lc($target);
         my $is_block = ($msg =~ /(?:🮇|\||\xF0\x9F\xAE\x87)/) ? 1 : 0;
         my $st = $COMPACT_BUFFER{$key};
 
@@ -755,7 +758,7 @@ sub signal_message_public {
         Irssi::signal_stop();
         return;
     }
-};
+}
 Irssi::signal_add_first('message public', 'signal_message_public');
 Irssi::signal_add('server disconnected', sub {
     my ($server) = @_;
