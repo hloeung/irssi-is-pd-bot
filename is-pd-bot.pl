@@ -471,8 +471,8 @@ sub _compact_format_card {
     my $bar = " | ";
     if (@block_lines && $block_lines[0] =~ /(?:^|$FMT_RE\[[^\]]+\]$FMT_RE\s*)($FMT_RE\s*(?:🮇|\||\xF0\x9F\xAE\x87)$FMT_RE\s*)/) {
         $bar = $1;
-        $bar =~ s/\s+$//;
-        $bar .= "\x0f ";
+        $bar =~ s/^\s+|\s+$//g;
+        $bar = "$bar\x0f ";
     }
 
     # Parse table rows and action links
@@ -526,9 +526,12 @@ sub _compact_format_card {
             next;
         }
 
-        # Match action bullets: matches '-' (matterircd), '➥', and bullet points
-        if ($content =~ /(?:➥|\xE2\x9E\xA5|[-•*])\s*(.*?)\s*\((https?:\/\/[^\s()]+)\)/) {
-            push @links, { label => $1, url => $2, suffix => $suffix };
+        # Match action bullets against $clean where IRC format codes are stripped
+        if ($clean =~ /(?:➥|\xE2\x9E\xA5|[-•*])?\s*(.*?)\s*\((https?:\/\/[^\s()]+)\)/) {
+            my ($label, $url) = ($1, $2);
+            $label =~ s/^\s*(?:➥|\xE2\x9E\xA5|[-•*])\s*//;
+            $label =~ s/^\s+|\s+$//g;
+            push @links, { label => $label, url => $url, suffix => $suffix };
         }
     }
 
@@ -578,7 +581,7 @@ sub signal_message_public {
         my $st = $REJOIN_BUFFER{$key};
 
         # If waiting on an open line and current message is not a new post/header, stitch them
-        if ($st && $msg !~ /^\s*(?:\[|\xF0\x9F\xAE\x87|🮇|\|)/) {
+        if ($st && _clean_text($msg) !~ /^\s*(?:\[|\xF0\x9F\xAE\x87|🮇|\|)/) {
             Irssi::timeout_remove($st->{timer}) if defined $st->{timer};
             $msg = _join_messages($st->{msg}, $msg);
             delete $REJOIN_BUFFER{$key};
