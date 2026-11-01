@@ -467,75 +467,72 @@ sub _compact_format_card {
         $desc = $m;
     }
 
-    # Extract colored bar from the first block line (preserves red, yellow, green, or blue pipe)
-    my $bar = " | ";
-    if (@block_lines && $block_lines[0] =~ /(?:^|$FMT_RE\[[^\]]+\]$FMT_RE\s*)($FMT_RE\s*(?:🮇|\||\xF0\x9F\xAE\x87)$FMT_RE\s*)/) {
+    # Extract colored bar prefix from the first block line
+    my $bar = "🮇 ";
+    if (@block_lines && $block_lines[0] =~ /(?:^|$FMT_RE\[[^\]]+\]$FMT_RE\s*)($FMT_RE\s*(?:🮇|\||\xF0\x9F\xAE\x87)\s*\x0f?)/) {
         $bar = $1;
         $bar =~ s/^\s+|\s+$//g;
-        $bar = "$bar\x0f ";
+        $bar .= "\x0f" unless $bar =~ /\x0f$/;
+        $bar .= " ";
     }
 
-    # Parse table rows and action links
+    # Omission logic: drop header, row, and Actions; retain all other lines
     my ($alert_id, $status, $assignee) = ('', '', '');
-    my @links;
-    my $in_row = 0;
+    my $in_table_row = 0;
+    my @kept_lines;
 
     foreach my $bl (@block_lines) {
         my $content = $bl;
-        # Strip thread tag and bar while accounting for color escapes
-        $content =~ s/^$FMT_RE\[(?:->|↪)?(?:\@\@)?[^\]]+\]$FMT_RE\s*//;
-        $content =~ s/^$FMT_RE\s*(?:🮇|\||\xF0\x9F\xAE\x87)$FMT_RE\s*//;
-
-        my $suffix = '';
-        if ($content =~ s/\s*(\(re\s*\@.*?\))\s*$//) {
-            $suffix = " $1";
-        }
-
-        # Normalize non-breaking spaces
         $content =~ s/(?:\xc2\xa0|\x{a0})/ /g;
+
+        # Strip thread tag and bar marker
+        $content =~ s/^$FMT_RE\[(?:->|↪)?(?:\@\@)?[^\]]+\]$FMT_RE\s*//;
+        $content =~ s/^$FMT_RE(?:\xF0\x9F\xAE\x87|🮇|\|)\x0f?\s*//;
         $content =~ s/^\s+|\s+$//g;
+        next if $content eq '';
 
-        # Plain text copy for pattern matching
-        my $clean = $content;
-        $clean =~ s/\x03(?:\d{1,2}(?:,\d{1,2})?)?//g;
-        $clean =~ s/[\x02\x04\x0f\x11\x16\x1d\x1e\x1f]//g;
+        my $clean = _clean_text($content);
+        $clean =~ s/^\s+|\s+$//g;
 
+        # Omit 1: Table header (matches "\x02Alert ID ... Status ... Assignee\x02")
         if ($clean =~ /^Alert ID\s{2,}/) {
-            $in_row = 1;
+            $in_table_row = 1;
             next;
         }
-        if ($in_row) {
+
+        # Omit 2: Table data row (extract fields into line 1, then omit)
+        if ($in_table_row) {
             my @parts = split(/\s{2,}/, $content);
             if (@parts >= 2) {
-                my $aid = $parts[0];
-                $aid =~ s/\x03(?:\d{1,2}(?:,\d{1,2})?)?//g;
-                $aid =~ s/[\x02\x04\x0f\x11\x16\x1d\x1e\x1f]//g;
+                my $aid = _clean_text($parts[0]);
+                $aid =~ s/^\s+|\s+$//g;
                 $alert_id = $aid;
 
                 $status = $parts[1];
+                $status =~ s/^\s+|\s+$//g;
 
                 if (@parts >= 3) {
-                    my $asn = $parts[2];
-                    $asn =~ s/\x03(?:\d{1,2}(?:,\d{1,2})?)?//g;
-                    $asn =~ s/[\x02\x04\x0f\x11\x16\x1d\x1e\x1f]//g;
+                    my $asn = _clean_text($parts[2]);
                     $asn =~ s/^\@\s*//;
+                    $asn =~ s/^\s+|\s+$//g;
                     $assignee = ($asn ne '[unknown to me]') ? $asn : '';
                 }
             }
-            $in_row = 0;
+            $in_table_row = 0;
             next;
         }
 
-        # Match action bullets against $clean where IRC format codes are stripped
-        if ($clean =~ /(?:➥|\xE2\x9E\xA5|[-•*])?\s*(.*?)\s*\((https?:\/\/[^\s()]+)\)/) {
-            my ($label, $url) = ($1, $2);
-            $label =~ s/^\s*(?:➥|\xE2\x9E\xA5|[-•*])\s*//;
-            $label =~ s/^\s+|\s+$//g;
-            push @links, { label => $label, url => $url, suffix => $suffix };
+        # Omit 3: Actions header (matches "\x02Actions\x02")
+        if ($clean =~ /^Actions\s*$/) {
+            next;
         }
+
+        # Everything else: KEEP (standardize leading bullet to ➥)
+        $content =~ s/^(?:➥|\xE2\x9E\xA5|[-•*])\s*/➥ /;
+        push @kept_lines, $content;
     }
 
-    # Construct output
+    # Construct output lines
     my @out;
     my $first = join(' ', grep { length($_) } ($tag, $status, $alert_id, $desc));
     $first .= " @ $assignee" if length($assignee);
@@ -543,8 +540,8 @@ sub _compact_format_card {
 
     my $pfx = length($tag) ? "$tag " : "";
     push @out, "${pfx}${bar}➥ PagerDuty ($pd_url)" if length($pd_url);
-    foreach my $l (@links) {
-        push @out, "${pfx}${bar}➥ $l->{label} ($l->{url})$l->{suffix}";
+    foreach my $l (@kept_lines) {
+        push @out, "${pfx}${bar}$l";
     }
 
     return @out;
@@ -555,9 +552,18 @@ sub compact_timer_flush {
     my $st = delete $COMPACT_BUFFER{$key} or return;
     Irssi::timeout_remove($st->{timer}) if defined $st->{timer};
     my @lines = _compact_format_card($st->{lines});
+    return unless @lines;
+
     local $COMPACT_EMITTING = 1;
+    my $server = $st->{server};
+    my $witem = $server ? $server->window_item_find($st->{target}) : undef;
+
     foreach my $l (@lines) {
-        Irssi::signal_emit('message public', $st->{server}, $l, $st->{nick}, $st->{address}, $st->{target});
+        if ($witem) {
+            $witem->print($l, Irssi::MSGLEVEL_PUBLIC);
+        } elsif ($server) {
+            Irssi::signal_emit('message public', $server, $l, $st->{nick}, $st->{address}, $st->{target});
+        }
     }
 }
 
@@ -808,7 +814,7 @@ sub signal_message_public {
         return;
     }
 }
-Irssi::signal_add_first('message public', 'signal_message_public');
+Irssi::signal_add('message public', 'signal_message_public');
 Irssi::signal_add('server disconnected', sub {
     my ($server) = @_;
     return unless $server && defined $server->{tag};
