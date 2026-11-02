@@ -406,10 +406,13 @@ our $REJOINING = 0;
 my %COMPACT_BUFFER;
 our $COMPACT_EMITTING = 0;
 
+my $SPACE_RE = qr/(?:\xc2\xa0|\x{a0}|\xe2\x80[\x80-\x8b]|\xe2\x80\xaf|\xe2\x81\x9f|\xe2\xa0\x80|\xe3\x80\x80|\xe3\x85\xa4)/;
+
+# Normalizes multi-byte Unicode spaces (NBSP, Braille blank, Hangul filler, etc.)
 sub _clean_text {
     my ($s) = @_;
     return '' unless defined $s;
-    $s =~ s/(?:\xc2\xa0|\x{a0}|\xe2\x80[\x80-\x8b]|\xe2\x80\xaf|\xe3\x80\x80)/ /g;
+    $s =~ s/$SPACE_RE/ /g;
     $s =~ s/\x03(?:\d{1,2}(?:,\d{1,2})?)?//g;
     $s =~ s/[\x02\x04\x0f\x11\x16\x1d\x1e\x1f]//g;
     return $s;
@@ -419,18 +422,15 @@ sub _is_line_open {
     my ($s) = @_;
     my $t = _clean_text($s);
     return 1 if $t =~ /\(https?:\/\/[^\s)]*$/ || $t =~ /\(\s*$/;
-    # Preserves supported arrow patterns without URL
-    return 1 if $t =~ /(?:➥|\xE2\x9E\xA5)[^()]*$/ && $t !~ /https?:\/\//;
-    # Anchors bullet alternatives to attachment bar without URL
-    return 1 if $t =~ /(?:🮇|\|)\s*[-*]\s+[^()]*$/ && $t !~ /https?:\/\//;
+    return 1 if $t =~ /\[[^\]]*$/;
     return 1 if length($t) >= 350 && $t =~ /(?:^|\s)https?:\/\/\S+$/;
     return 0;
 }
 
 sub _join_messages {
-    my ($prev,$curr) = @_;
+    my ($prev, $curr) = @_;
     my $sep = ($prev =~ m{(?:https?://\S*|\()\z} || $prev =~ /\s\z/) ? '' : ' ';
-    return $prev . $sep .$curr;
+    return $prev . $sep . $curr;
 }
 
 sub timer_rejoin_flush {
@@ -438,11 +438,11 @@ sub timer_rejoin_flush {
     my $st = delete $REJOIN_BUFFER{$key} or return;
     $st->{timer} = undef;
     local $REJOINING = 1;
-    Irssi::signal_emit('message public', $st->{server}, $st->{msg},$st->{nick}, $st->{address},$st->{target});
+    Irssi::signal_emit('message public', $st->{server}, $st->{msg}, $st->{nick}, $st->{address}, $st->{target});
 }
 
-my $TS_PAT = qr/(?:\[\d{4}-\d{2}-\d{2} \d{2}:\d{2}(?::\d{2})?\]|\[\d{2}:\d{2}(?::\d{2})?\]|\d{2}:\d{2}(?::\d{2})?>)/;
-my $TID_TOKEN = qr/(?:(?:->|↪)?\@\@(?:[0-9a-z]{1,26}|\$[0-9A-Za-z\-_\.]{1,43})|(?:->|↪)(?:[0-9a-z]{1,26}|\$[0-9A-Za-z\-_\.]{1,43})(?:…|\.\.\.)?|(?:[0-9a-f]{3}|[0-9a-z]{26}|\$[0-9A-Za-z\-_\.]{43}|[0-9a-z]{1,25}(?:…|\.\.\.)))/;
+my $TS_PAT = qr/(?:\[\d{4}-\d{2}-\d{2} \d{2}:\d{2}(?::\d{2})?\]|\[\d{1,2}:\d{2}(?::\d{2})?\]|\d{1,2}:\d{2}(?::\d{2})?>)/;
+my $TID_TOKEN = qr/(?:(?:->|↪)?\@\@(?:[0-9a-z]{1,26}|\$[0-9A-Za-z\-_\.]{1,43})(?:…|\.\.\.)?|(?:->|↪)(?:[0-9a-z]{1,26}|\$[0-9A-Za-z\-_\.]{1,43})(?:…|\.\.\.)?|(?:[0-9a-f]{3}|[0-9a-z]{26}|\$[0-9A-Za-z\-_\.]{43}|[0-9a-z]{1,25}(?:…|\.\.\.)))/;
 my $TAG_PAT = qr/\[$TID_TOKEN(?:,\s*$TID_TOKEN)*\]/;
 my $FMT_BYTE = qr/(?:[\x02\x04\x0f\x11\x16\x1d\x1e\x1f]|\x03(?:\d{1,2}(?:,\d{1,2})?)?)/;
 my $FMT_RE   = qr/$FMT_BYTE*/;
@@ -484,15 +484,15 @@ sub _compact_format_card {
     if ($main) {
         my $m = $main;
         $m =~ s/\s*\(re\s*\@.*?\)\s*$//;
-        $m =~ s/(?:\xc2\xa0|\x{a0}|\xe2\x80[\x80-\x8b]|\xe2\x80\xaf|\xe3\x80\x80)/ /g;
+        $m =~ s/$SPACE_RE/ /g;
 
-        # Extract replay timestamp ([YYYY-MM-DD HH:MM], [HH:MM], or HH:MM>)
-        if ($m =~ s/^($FMT_RE$TS_PAT$FMT_RE)\s*//) {
+        # Extract replay timestamp ([YYYY-MM-DD HH:MM], [H:MM], or H:MM>)
+        if ($m =~ s/^\s*($FMT_RE$TS_PAT$FMT_RE)\s*//) {
             $ts = $1;
         }
 
         # Preserve the full thread token for downstream handlers
-        if ($m =~ s/^($FMT_RE$TAG_PAT$FMT_RE)\s*//) {
+        if ($m =~ s/^\s*($FMT_RE$TAG_PAT$FMT_RE)\s*//) {
             $tag = $1;
         }
 
@@ -503,9 +503,21 @@ sub _compact_format_card {
         $desc = $m;
     }
 
+    # Extract prefix from the first block line when main line is unavailable or untagged
+    if ((!length($ts) || !length($tag)) && @block_lines) {
+        my $bl0 = $block_lines[0];
+        $bl0 =~ s/$SPACE_RE/ /g;
+        if (!length($ts) && $bl0 =~ s/^\s*($FMT_RE$TS_PAT$FMT_RE)\s*//) {
+            $ts = $1;
+        }
+        if (!length($tag) && $bl0 =~ s/^\s*($FMT_RE$TAG_PAT$FMT_RE)\s*//) {
+            $tag = $1;
+        }
+    }
+
     # Extract colored bar from the first block line (preserves red, yellow, green, or blue pipe/block)
     my $bar = "🮇 ";
-    if (@block_lines && $block_lines[0] =~ /(?:^|$FMT_RE(?:$TS_PAT\s+)?(?:$TAG_PAT\s+)?$FMT_RE)($FMT_RE\s*(?:🮇|\||\xF0\x9F\xAE\x87)\s*\x0f?)/) {
+    if (@block_lines && $block_lines[0] =~ /(?:^\s*|$FMT_RE(?:$TS_PAT\s+)?(?:$TAG_PAT\s+)?$FMT_RE)($FMT_RE\s*(?:🮇|\||\xF0\x9F\xAE\x87)\s*\x0f?)/) {
         $bar = $1;
         $bar =~ s/^\s+|\s+$//g;
         $bar .= "\x0f" unless $bar =~ /\x0f$/;
@@ -515,14 +527,16 @@ sub _compact_format_card {
     # Filter block lines: OMIT table header, table row, and Actions title.
     #    KEEP everything else and seamlessly stitch wrapped continuation lines!
     my ($alert_id, $status, $assignee) = ('', '', '');
+    my (@table_headers, @extra_fields);
     my $in_table_row = 0;
     my @kept_lines;
 
     foreach my $bl (@block_lines) {
         my $content = $bl;
-        $content =~ s/(?:\xc2\xa0|\x{a0}|\xe2\x80[\x80-\x8b]|\xe2\x80\xaf|\xe3\x80\x80)/ /g;
+        $content =~ s/$SPACE_RE/ /g;
 
-        # Strip timestamp, thread tag, and bar with trailing bare color resets
+        # Strip leading whitespace accepted by classifier before removing prefixes
+        $content =~ s/^\s*//;
         $content =~ s/^$FMT_RE$TS_PAT$FMT_RE\s*//;
         $content =~ s/^$FMT_RE$TAG_PAT$FMT_RE\s*//;
         $content =~ s/^$FMT_RE(?:\xF0\x9F\xAE\x87|🮇|\|)$FMT_RE\s*//;
@@ -532,28 +546,48 @@ sub _compact_format_card {
         my $clean = _clean_text($content);
         $clean =~ s/^\s+|\s+$//g;
 
-        # Omit Table header (e.g. \x02Alert ID ... Status ... Assignee\x02)
+        # Omit Table header (e.g. \x02Alert ID ... Status ... Assignee\x02) and record column order
         if ($clean =~ /^Alert ID\s{2,}/) {
+            @table_headers = split(/\s{2,}/, $clean);
             $in_table_row = 1;
             next;
         }
 
-        # Omit Table data row (absorb values into line 1, then omit)
+        # Omit Table data row (dynamically parse by header, preserve extra fields)
         if ($in_table_row) {
             my @parts = split(/\s{2,}/, $content);
             if (@parts >= 2) {
-                my $aid = _clean_text($parts[0]);
-                $aid =~ s/^\s+|\s+$//g;
-                $alert_id = length($aid) ? "\x02$aid\x02" : '';
+                my %row;
+                for my $i (0 .. $#table_headers) {
+                    $row{$table_headers[$i]} = $parts[$i] if defined $parts[$i];
+                }
 
-                $status = $parts[1];
-                $status =~ s/^\s+|\s+$//g;
+                for my $k (keys %row) {
+                    if ($k =~ /^Alert ID/i) {
+                        my $aid = _clean_text($row{$k});
+                        $aid =~ s/^\s+|\s+$//g;
+                        $alert_id = length($aid) ? "\x02$aid\x02" : '';
+                        delete $row{$k};
+                    } elsif ($k =~ /^Status/i) {
+                        $status = $row{$k};
+                        $status =~ s/^\s+|\s+$//g;
+                        delete $row{$k};
+                    } elsif ($k =~ /^Assignee/i) {
+                        my $asn = _clean_text($row{$k});
+                        $asn =~ s/^\@\s*//;
+                        $asn =~ s/^\s+|\s+$//g;
+                        $assignee = ($asn ne '[unknown to me]') ? $asn : '';
+                        delete $row{$k};
+                    }
+                }
 
-                if (@parts >= 3) {
-                    my $asn = _clean_text($parts[2]);
-                    $asn =~ s/^\@\s*//;
-                    $asn =~ s/^\s+|\s+$//g;
-                    $assignee = ($asn ne '[unknown to me]') ? $asn : '';
+                # Preserve additional fields (e.g. Service)
+                for my $h (@table_headers) {
+                    if (exists $row{$h} && length $row{$h}) {
+                        my $val = _clean_text($row{$h});
+                        $val =~ s/^\s+|\s+$//g;
+                        push @extra_fields, "($val)" if length $val;
+                    }
                 }
             } else {
                 # Preserve unparseable table row rather than silently dropping it
@@ -583,7 +617,7 @@ sub _compact_format_card {
 
     # Construct compact output
     my @out;
-    my $first = join(' ', grep { length($_) } ($ts, $tag, $status, $alert_id, $desc));
+    my $first = join(' ', grep { length($_) } ($ts, $tag, $status, $alert_id, $desc, @extra_fields));
     $first .= " @ $assignee" if length($assignee);
     push @out, $first if length($first);
 
@@ -736,45 +770,47 @@ sub signal_message_public {
 
     my $status_pattern = qr/(?:🚨 TRIGGERED|🆗 ACKNOWLEDGED|(?:‼|‼️|!!) UNACKNOWLEDGED|📤 ESCALATED|📥 (?:RE)?ASSIGNED|💤 SNOOZED|✅ RESOLVED)/;
 
-    if ($is_pd_chan || $is_messages_chan) {
+    my $clean_msg = $msg;
+    $clean_msg =~ s/\x03(?:\d{1,2}(?:,\d{1,2})?)?//g;
+    $clean_msg =~ s/[\x02\x0f\x16\x1d\x1f]//g;
+    $clean_msg =~ s/$SPACE_RE/ /g;
+    my $bot_quote = qr/\Q${bot_nick}\E(?:\/\Q${pagerduty_channel}\E)?/;
+    $clean_msg =~ s/\(re (?>[^()]|(?<paren>\((?>[^()]|(?&paren))*\)))*?\@$bot_quote: (?>[^()]|(?&paren))*\)//g;
+    $clean_msg =~ s/\(re [^)]*?\@$bot_quote: .*?\)//g;
+
+    # Extract thread ID from message brackets if present
+    if ($clean_msg =~ /\[(?:->|↪)?\@\@([0-9a-z]{1,26}|\$[0-9A-Za-z\-_\.]{1,43})/) {
+        $tid = $1;
+    } elsif ($clean_msg =~ /\[(?:->|↪)([0-9a-z]{1,26}|\$[0-9A-Za-z\-_\.]{1,43})(?:…|\.\.\.|\]|,)/) {
+        $tid = $1;
+    } elsif ($clean_msg =~ /\[([0-9a-f]{3}|[0-9a-z]{26}|\$[0-9A-Za-z\-_\.]{1,43}|[0-9a-z]{1,25}(?:…|\.\.\.))\]/) {
+        $tid = $1;
+        $tid =~ s/(?:…|\.\.\.)$//;
+    }
+    $tid = resolve_thread_id($target, $tid) if $tid;
+    # Explicit prefixes can outlive pending continuations; only expand a unique full ID.
+    if ($tid && !is_canonical_tid($tid) && exists $THREAD_PD_MAP{$server_tag}
+        && !exists $THREAD_PD_MAP{$server_tag}{$tid}) {
+        my @matches = grep {
+            is_canonical_tid($_) && index($_, $tid) == 0
+        } keys %{$THREAD_PD_MAP{$server_tag}};
+        $tid = $matches[0] if @matches == 1;
+    }
+    my $explicit_tid = $tid;
+    my $message_content = $clean_msg;
+
+    # Strip all supported replay timestamp forms before cache parsing
+    $message_content =~ s/^$TS_PAT\s*//;
+    if ($explicit_tid) {
+        $message_content =~ s/^\[(?:->|↪)?(?:\@\@)?(?:[0-9a-z]{1,26}|\$[0-9A-Za-z\-_\.]{1,43})(?:…|\.\.\.)?(?:,[^\]]+)?\]\s*//;
+    }
+
+    # Prevent historical replay from modifying the live incident cache
+    my $is_replay = ($is_messages_chan || $clean_msg =~ /^\s*$TS_PAT/);
+
+    if ($is_pd_chan && !$is_replay) {
         my $pd_id;
         my $cache = ($PD_CACHE{$server_tag} //= []);
-
-        # Ordering matters, TRIGGERED can also be part of the
-        # parent/thread msg. Ignore thread reply quotes so
-        # quoted parent incidents don't re-enter the cache.
-        my $clean_msg = $msg;
-        $clean_msg =~ s/\x03(?:\d{1,2}(?:,\d{1,2})?)?//g;
-        $clean_msg =~ s/[\x02\x0f\x16\x1d\x1f]//g;
-        $clean_msg =~ s/(?:\xc2\xa0|\x{a0})/ /g;
-        my $bot_quote = qr/\Q${bot_nick}\E(?:\/\Q${pagerduty_channel}\E)?/;
-        $clean_msg =~ s/\(re (?>[^()]|(?<paren>\((?>[^()]|(?&paren))*\)))*?\@$bot_quote: (?>[^()]|(?&paren))*\)//g;
-        $clean_msg =~ s/\(re [^)]*?\@$bot_quote: .*?\)//g;
-
-        # Extract thread ID from message brackets if present
-        if ($clean_msg =~ /\[(?:->|↪)?\@\@([0-9a-z]{1,26}|\$[0-9A-Za-z\-_\.]{1,43})/) {
-            $tid = $1;
-        } elsif ($clean_msg =~ /\[(?:->|↪)([0-9a-z]{1,26}|\$[0-9A-Za-z\-_\.]{1,43})(?:…|\.\.\.|\]|,)/) {
-            $tid = $1;
-        } elsif ($clean_msg =~ /\[([0-9a-f]{3}|[0-9a-z]{26}|\$[0-9A-Za-z\-_\.]{1,43}|[0-9a-z]{1,25}(?:…|\.\.\.))\]/) {
-            $tid = $1;
-            $tid =~ s/(?:…|\.\.\.)$//;
-        }
-        $tid = resolve_thread_id($target, $tid) if $tid;
-        # Explicit prefixes can outlive pending continuations; only expand a unique full ID.
-        if ($tid && !is_canonical_tid($tid) && exists $THREAD_PD_MAP{$server_tag}
-            && !exists $THREAD_PD_MAP{$server_tag}{$tid}) {
-            my @matches = grep {
-                is_canonical_tid($_) && index($_, $tid) == 0
-            } keys %{$THREAD_PD_MAP{$server_tag}};
-            $tid = $matches[0] if @matches == 1;
-        }
-        my $explicit_tid = $tid;
-        my $message_content = $clean_msg;
-        $message_content =~ s/^\[\d{4}-\d{2}-\d{2} \d{2}:\d{2}(?::\d{2})?\]\s*//;
-        if ($explicit_tid) {
-            $message_content =~ s/^\[(?:->|↪)?(?:\@\@)?(?:[0-9a-z]{1,26}|\$[0-9A-Za-z\-_\.]{1,43})(?:…|\.\.\.)?(?:,[^\]]+)?\]\s*//;
-        }
 
         # Wrapped lines must arrive promptly; unrelated posts must not inherit stale context.
         if (exists $PENDING_SINCE{$server_tag} && time - $PENDING_SINCE{$server_tag} > 5) {
@@ -906,8 +942,8 @@ sub signal_message_public {
     # Presentation Layer (Buffer card if compact format enabled)
     if (Irssi::settings_get_bool('is_pd_bot_compact_format')) {
         # Avoid re-buffering output that has already been compacted by another script or prior pass
-        my $is_already_compacted = ($msg =~ /(?:🮇|\|)\s*(?:➥|\xE2\x9E\xA5)/
-            || $msg =~ /$status_pattern\s+(?:\x02)?(?:P[A-Z0-9]{6}|Q[A-Z0-9]{13})\b/) ? 1 : 0;
+        my $is_already_compacted = ($msg =~ /$status_pattern\s+(?:\x02)?(?:P[A-Z0-9]{6}|Q[A-Z0-9]{13})\b/
+            || $msg =~ /(?:🮇|\|)\s*(?:➥|\xE2\x9E\xA5)\s*(?:\x1f\x1d)?PagerDuty(?:\x1d\x1f)?\s*\(/) ? 1 : 0;
         return if $is_already_compacted;
 
         # Check block prefix at the valid anchor position
