@@ -613,8 +613,15 @@ sub _compact_format_card {
             next;
         }
 
+        # Any subsequent heading (\x02...\x02) exits Actions mode and is preserved
+        if ($content =~ /^\s*\x02[^\x02\x0f]+(?:\x02\x0f?|\x0f)\s*$/) {
+            $in_actions = 0;
+            push @kept_lines, $content;
+            next;
+        }
+
         if ($in_actions) {
-            # In Actions section: start new line on bullet; otherwise join to previous line
+            # In Actions section: start new line on bullet; otherwise join unconditionally to previous line
             if ($content =~ s/^(?:➥|\xE2\x9E\xA5|\xE2\x80\xA2|[-*])\s*/➥ /) {
                 push @kept_lines, $content;
             } elsif (@kept_lines) {
@@ -624,7 +631,15 @@ sub _compact_format_card {
                 push @kept_lines, $content;
             }
         } else {
-            push @kept_lines, $content;
+            # Outside Actions section: standardize bullets and stitch unfinished lines
+            if ($content =~ s/^(?:➥|\xE2\x9E\xA5|\xE2\x80\xA2|[-*])\s*/➥ /) {
+                push @kept_lines, $content;
+            } elsif (@kept_lines && _is_line_open($kept_lines[-1])) {
+                my $sep = ($kept_lines[-1] =~ m{(?:https?://[^\s)]*|\()\z} || $kept_lines[-1] =~ /\s\z/) ? '' : ' ';
+                $kept_lines[-1] .= $sep . $content;
+            } else {
+                push @kept_lines, $content;
+            }
         }
     }
 
