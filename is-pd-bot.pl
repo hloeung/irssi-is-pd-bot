@@ -422,6 +422,51 @@ my $FMT_BYTE = qr/(?:[\x02\x04\x0f\x11\x16\x1d\x1e\x1f]|\x03(?:\d{1,2}(?:,\d{1,2
 my $FMT_RE   = qr/$FMT_BYTE*/;
 my $TS_PAT = qr/(?:\[\d{4}-\d{2}-\d{2} \d{2}:\d{2}(?::\d{2})?\]|\[\d{1,2}:\d{2}(?::\d{2})?\]|\d{1,2}:\d{2}(?::\d{2})?>)/;
 
+# Matches an unclosed wrapped URL (allowing balanced or unfinished internal parens)
+# or an unclosed opening parenthesis before a URL
+my $UNCLOSED_URL_PAT = qr{
+    (?:
+        \( https?://
+        (?>
+            [^()]+
+            |
+            \( (?> (?&UNC) \)? )
+        )*
+        \z
+        |
+        \(\s*\z
+    )
+    (?(DEFINE)
+        (?<UNC>
+            (?>
+                [^()]+
+                |
+                \( (?> (?&UNC) \)? )
+            )*
+        )
+    )
+}x;
+
+# Matches an unclosed outer parenthesis on description text
+my $UNCLOSED_PAREN_PAT = qr{
+    \(
+    (?>
+        [^()]+
+        |
+        \( (?> (?&UNC) \)? )
+    )*
+    \z
+    (?(DEFINE)
+        (?<UNC>
+            (?>
+                [^()]+
+                |
+                \( (?> (?&UNC) \)? )
+            )*
+        )
+    )
+}x;
+
 # Matches an unclosed wrapped URL, open paren, or bare URL when selecting a join separator
 my $URL_SEP_PAT = qr{
     (?:
@@ -448,38 +493,28 @@ my $URL_SEP_PAT = qr{
     )
 }x;
 
-# Matches any unclosed outer parenthesis (allowing balanced or unfinished internal parens)
-my $UNCLOSED_PAREN_PAT = qr{
-    \(
-    (?>
-        [^()]+
-        |
-        \( (?> (?&UNC) \)? )
-    )*
-    \z
-    (?(DEFINE)
-        (?<UNC>
-            (?>
-                [^()]+
-                |
-                \( (?> (?&UNC) \)? )
-            )*
-        )
-    )
-}x;
-
 sub _is_line_open {
-    my ($s) = @_;
+    my ($s, $latest) = @_;
     my $t = _clean_text($s);
-    # Line ended with an unclosed parenthesis (e.g. wrapped description or URL)
-    return 1 if $t =~ $UNCLOSED_PAREN_PAT;
+    my $latest_t = defined($latest) ? _clean_text($latest) : $t;
+
+    # Genuine unclosed URL wrapper
+    return 1 if $t =~ $UNCLOSED_URL_PAT;
+
     # Recognizable incomplete thread tag prefix (anchored at start of message)
     return 1 if $t =~ /^\s*(?:$TS_PAT\s+)?\[(?:(?:->|↪)(?:\@\@)?|\@\@)[^\]]*$/;
+
     # Preserves action bullet fragments that wrapped before the target URL
     return 1 if $t =~ /(?:🮇|\|)\s*(?:➥|\xE2\x9E\xA5)\s+[A-Za-z][^()]*$/ && $t !~ /https?:\/\//;
     return 1 if $t =~ /(?:🮇|\|)\s*[-*]\s+(?:View|Playbook|Source|Action|Silence)[^()]*$/i && $t !~ /https?:\/\//;
-    # Any message approaching RFC 2812 limits that wraps without terminal punctuation
-    return 1 if length($t) >= 350 && $t !~ /[.!?;]\s*$/;
+
+    # Long bare URLs split across IRC lines (preserved independently of punctuation)
+    return 1 if length($latest_t) >= 350 && $latest_t =~ /(?:^|\s)https?:\/\/\S+$/;
+
+    # Long card prose with unclosed description parenthesis (requires transport-wrapping evidence)
+    my $is_card_ctx = ($t =~ /^\s*(?:$TS_PAT\s+)?\[(?:->|↪)?(?:\@\@)?[0-9a-z]/ || $t =~ /\[FIRING/);
+    return 1 if $is_card_ctx && length($latest_t) >= 350 && $t =~ $UNCLOSED_PAREN_PAT;
+
     return 0;
 }
 
@@ -782,17 +817,20 @@ sub signal_message_public {
     if (Irssi::settings_get_bool('is_pd_bot_rejoin_urls') && !$REJOINING) {
         my $st = $REJOIN_BUFFER{$key};
 
-        # If waiting on an open line and current message is not a new post/header/bullet, stitch them
+        # If waiting on an open line and current message is not a new post/header, stitch them
         my $clean_prefix = _clean_text($msg);
         $clean_prefix =~ s/^\s*$TS_PAT\s*//;
-        if ($st && $clean_prefix !~ /^\s*(?:\[|\xF0\x9F\xAE\x87|🮇|\||(?:➥|\xE2\x9E\xA5|[-*])\s)/) {
+        # Check against recognized thread tags and attachment bars, not arbitrary bracketed text
+        if ($st && $clean_prefix !~ /^\s*(?:$TAG_PAT|\xF0\x9F\xAE\x87|🮇|\|)/) {
             Irssi::timeout_remove($st->{timer}) if defined $st->{timer};
             my $cont_msg = $msg;
             $cont_msg =~ s/^\s*$FMT_RE$TS_PAT$FMT_RE\s*//;
             $msg = _join_messages($st->{msg}, $cont_msg);
+            my $join_count = ($st->{count} // 1) + 1;
             delete $REJOIN_BUFFER{$key};
 
-            unless (_is_line_open($msg)) {
+            # Evaluate length heuristics on the latest fragment, not accumulated text; bound buffer growth
+            unless ($join_count < 5 && _is_line_open($msg, $cont_msg)) {
                 local $REJOINING = 1;
                 Irssi::signal_emit('message public', $server, $msg, $nick, $address, $target);
                 Irssi::signal_stop();
@@ -801,6 +839,21 @@ sub signal_message_public {
         } elsif ($st) {
             Irssi::timeout_remove($st->{timer}) if defined $st->{timer};
             timer_rejoin_flush($key);
+        }
+
+        if (_is_line_open($msg, $msg)) {
+            my $ms = Irssi::settings_get_int('is_pd_bot_rejoin_timeout') || 500;
+            $REJOIN_BUFFER{$key} = {
+                server  => $server,
+                msg     => $msg,
+                nick    => $nick,
+                address => $address,
+                target  => $target,
+                count   => 1,
+                timer   => Irssi::timeout_add_once($ms, 'timer_rejoin_flush', $key),
+            };
+            Irssi::signal_stop();
+            return;
         }
 
         if (_is_line_open($msg)) {
