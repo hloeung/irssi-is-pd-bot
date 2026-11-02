@@ -428,9 +428,9 @@ sub _is_line_open {
 }
 
 sub _join_messages {
-    my ($prev, $curr) = @_;
+    my ($prev,$curr) = @_;
     my $sep = ($prev =~ m{(?:https?://\S*|\()\z} || $prev =~ /\s\z/) ? '' : ' ';
-    return $prev . $sep . $curr;
+    return $prev . $sep .$curr;
 }
 
 sub timer_rejoin_flush {
@@ -438,15 +438,15 @@ sub timer_rejoin_flush {
     my $st = delete $REJOIN_BUFFER{$key} or return;
     $st->{timer} = undef;
     local $REJOINING = 1;
-    Irssi::signal_emit('message public', $st->{server}, $st->{msg}, $st->{nick}, $st->{address}, $st->{target});
+    Irssi::signal_emit('message public', $st->{server}, $st->{msg},$st->{nick}, $st->{address},$st->{target});
 }
 
 my $TS_PAT = qr/(?:\[\d{4}-\d{2}-\d{2} \d{2}:\d{2}(?::\d{2})?\]|\[\d{2}:\d{2}(?::\d{2})?\]|\d{2}:\d{2}(?::\d{2})?>)/;
-my $TID_PAT = qr/(?:[0-9a-f]{3}|[0-9a-z]{26}|\$[0-9A-Za-z\-_\.]{43}|[0-9a-z]{1,25}(?:…|\.\.\.))/;
-my $TAG_PAT = qr/\[(?:->|↪)?(?:\@\@)?$TID_PAT(?:,\s*(?:\@\@)?$TID_PAT)*\]/;
+my $TID_TOKEN = qr/(?:(?:->|↪)?\@\@(?:[0-9a-z]{1,26}|\$[0-9A-Za-z\-_\.]{1,43})|(?:->|↪)(?:[0-9a-z]{1,26}|\$[0-9A-Za-z\-_\.]{1,43})(?:…|\.\.\.)?|(?:[0-9a-f]{3}|[0-9a-z]{26}|\$[0-9A-Za-z\-_\.]{43}|[0-9a-z]{1,25}(?:…|\.\.\.)))/;
+my $TAG_PAT = qr/\[$TID_TOKEN(?:,\s*$TID_TOKEN)*\]/;
 my $FMT_BYTE = qr/(?:[\x02\x04\x0f\x11\x16\x1d\x1e\x1f]|\x03(?:\d{1,2}(?:,\d{1,2})?)?)/;
 my $FMT_RE   = qr/$FMT_BYTE*/;
-my $BLOCK_PREFIX = qr/^\s*(?:$TS_PAT\s+)?(?:$TAG_PAT\s+)?$FMT_RE\s*(?:🮇|\||\xF0\x9F\xAE\x87)/;
+my $BLOCK_PREFIX = qr/^\s*(?:$FMT_RE$TS_PAT$FMT_RE\s+)?(?:$FMT_RE$TAG_PAT$FMT_RE\s+)?$FMT_RE\s*(?:🮇|\||\xF0\x9F\xAE\x87)/;
 
 sub _format_thread_tag {
     my ($tag) = @_;
@@ -491,9 +491,9 @@ sub _compact_format_card {
             $ts = $1;
         }
 
-        # Restrict thread tags to recognized thread IDs (prevents [PROD]/[FIRING:1] tag conversion)
+        # Preserve the full thread token for downstream handlers
         if ($m =~ s/^($FMT_RE$TAG_PAT$FMT_RE)\s*//) {
-            $tag = _format_thread_tag($1);
+            $tag = $1;
         }
 
         if ($m =~ s/\s*\((https?:\/\/[^\s()]+)\)\s*$//) {
@@ -503,7 +503,7 @@ sub _compact_format_card {
         $desc = $m;
     }
 
-    # Extract colored bar from the first block line
+    # Extract colored bar from the first block line (preserves red, yellow, green, or blue pipe/block)
     my $bar = "🮇 ";
     if (@block_lines && $block_lines[0] =~ /(?:^|$FMT_RE(?:$TS_PAT\s+)?(?:$TAG_PAT\s+)?$FMT_RE)($FMT_RE\s*(?:🮇|\||\xF0\x9F\xAE\x87)\s*\x0f?)/) {
         $bar = $1;
@@ -513,6 +513,7 @@ sub _compact_format_card {
     }
 
     # Filter block lines: OMIT table header, table row, and Actions title.
+    #    KEEP everything else and seamlessly stitch wrapped continuation lines!
     my ($alert_id, $status, $assignee) = ('', '', '');
     my $in_table_row = 0;
     my @kept_lines;
@@ -537,7 +538,7 @@ sub _compact_format_card {
             next;
         }
 
-        # Omit Table data row (preserve if row cannot be split into columns)
+        # Omit Table data row (absorb values into line 1, then omit)
         if ($in_table_row) {
             my @parts = split(/\s{2,}/, $content);
             if (@parts >= 2) {
@@ -555,7 +556,7 @@ sub _compact_format_card {
                     $assignee = ($asn ne '[unknown to me]') ? $asn : '';
                 }
             } else {
-                # Preserve unparseable table row
+                # Preserve unparseable table row rather than silently dropping it
                 push @kept_lines, $content;
             }
             $in_table_row = 0;
@@ -567,11 +568,12 @@ sub _compact_format_card {
             next;
         }
 
+        # EVERYTHING ELSE: Keep it!
         # Standardize complete UTF-8 bullet outside character classes
         if ($content =~ s/^(?:➥|\xE2\x9E\xA5|\xE2\x80\xA2|[-*])\s*/➥ /) {
             push @kept_lines, $content;
         } elsif (@kept_lines && _is_line_open($kept_lines[-1])) {
-            # Only stitch when the prior line is open (unclosed paren/URL)
+            # Only stitch when the preceding line is unfinished
             my $sep = ($kept_lines[-1] =~ m{(?:https?://\S*|\()\z} || $kept_lines[-1] =~ /\s\z/) ? '' : ' ';
             $kept_lines[-1] .= $sep . $content;
         } else {
@@ -596,10 +598,13 @@ sub _compact_format_card {
     return @out;
 }
 
+my %COMPACT_ACTIVE_TID;
+
 sub compact_timer_flush {
     my ($key) = @_;
     my $st = delete $COMPACT_BUFFER{$key} or return;
     Irssi::timeout_remove($st->{timer}) if defined $st->{timer};
+    delete $COMPACT_ACTIVE_TID{$st->{channel_key}} if exists $st->{channel_key};
     my @lines = _compact_format_card($st->{lines});
     return unless @lines;
 
@@ -622,7 +627,8 @@ sub signal_message_public {
     return unless lc($nick) eq lc($bot_nick)
         || (lc($target) eq '&messages' && lc($nick) =~ m{^\Q$bot_nick\E/});
 
-    my $key = ($server->{tag} // '') . '/' . lc($target);
+    # Include sender nick in the rejoin key to keep &messages streams separate
+    my $key = ($server->{tag} // '') . '/' . lc($target) . '/' . lc($nick);
 
     # Line Healing (Rejoin split URLs and action bullets) - active in ALL bot channels
     if (Irssi::settings_get_bool('is_pd_bot_rejoin_urls') && !$REJOINING) {
@@ -842,8 +848,15 @@ sub signal_message_public {
         # Check block prefix at the valid anchor position
         my $is_block = ($msg =~ $BLOCK_PREFIX) ? 1 : 0;
 
-        # Keep interleaved threads in separate buffers
-        my $compact_key = ($server->{tag} // '') . '/' . lc($target) . '/' . ($tid // 'notid');
+        # Track card thread independently of cache state so subsequent lines keep their thread
+        my $channel_key = ($server->{tag} // '') . '/' . lc($target) . '/' . lc($nick);
+        if ($is_block) {
+            $tid //= $COMPACT_ACTIVE_TID{$channel_key};
+        } else {
+            $COMPACT_ACTIVE_TID{$channel_key} = $tid;
+        }
+
+        my $compact_key = $channel_key . '/' . ($tid // 'notid');
         my $st = $COMPACT_BUFFER{$compact_key};
 
         if ($st && $is_block) {
@@ -857,11 +870,12 @@ sub signal_message_public {
         } else {
             compact_timer_flush($compact_key) if $st;
             $COMPACT_BUFFER{$compact_key} = {
-                server  => $server,
-                nick    => $nick,
-                address => $address,
-                target  => $target,
-                lines   => [$msg],
+                server      => $server,
+                nick        => $nick,
+                address     => $address,
+                target      => $target,
+                channel_key => $channel_key,
+                lines       => [$msg],
             };
         }
 
@@ -879,12 +893,19 @@ Irssi::signal_add('server disconnected', sub {
     my ($server) = @_;
     return unless $server && defined $server->{tag};
     my $pfx = $server->{tag} . '/';
-    # Flush pending rejoin buffers
+    # Cancel pending rejoin timers before flushing
     for my $k (grep { index($_, $pfx) == 0 } keys %REJOIN_BUFFER) {
-        timer_rejoin_flush($k);
+        my $st = delete $REJOIN_BUFFER{$k};
+        if ($st) {
+            Irssi::timeout_remove($st->{timer}) if defined $st->{timer};
+            local $REJOINING = 1;
+            Irssi::signal_emit('message public', $st->{server}, $st->{msg}, $st->{nick}, $st->{address}, $st->{target});
+        }
     }
-    # Flush pending compact messages on disconnect
+    # Cancel pending compact timers before flushing
     for my $k (grep { index($_, $pfx) == 0 } keys %COMPACT_BUFFER) {
+        my $st = $COMPACT_BUFFER{$k};
+        Irssi::timeout_remove($st->{timer}) if $st && defined $st->{timer};
         compact_timer_flush($k);
     }
 });
