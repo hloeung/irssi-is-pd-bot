@@ -496,7 +496,8 @@ my $URL_SEP_PAT = qr{
 sub _is_line_open {
     my ($s, $latest) = @_;
     my $t = _clean_text($s);
-    my $latest_t = defined($latest) ? _clean_text($latest) : $t;
+    my $raw_frag = defined($latest) ? $latest : $s;
+    my $raw_len = do { use bytes; length($raw_frag // '') };
 
     # Genuine unclosed URL wrapper
     return 1 if $t =~ $UNCLOSED_URL_PAT;
@@ -508,12 +509,12 @@ sub _is_line_open {
     return 1 if $t =~ /(?:🮇|\|)\s*(?:➥|\xE2\x9E\xA5)\s+[A-Za-z][^()]*$/ && $t !~ /https?:\/\//;
     return 1 if $t =~ /(?:🮇|\|)\s*[-*]\s+(?:View|Playbook|Source|Action|Silence)[^()]*$/i && $t !~ /https?:\/\//;
 
-    # Long bare URLs split across IRC lines (checks accumulated text for URL, latest fragment for length)
-    return 1 if length($latest_t) >= 350 && $t =~ /(?:^|\s)https?:\/\/\S+$/;
+    # Long bare URLs split across IRC lines (checks accumulated text for URL, raw latest fragment for length)
+    return 1 if $raw_len >= 350 && $t =~ /(?:^|\s)https?:\/\/\S+$/;
 
-    # Long card prose with unclosed description parenthesis (including Matrix $ IDs)
-    my $is_card_ctx = ($t =~ /^\s*(?:$TS_PAT\s+)?\[(?:->|↪)?(?:\@\@)?[0-9a-zA-Z\$]/ || $t =~ /\[FIRING/);
-    return 1 if $is_card_ctx && length($latest_t) >= 350 && $t =~ $UNCLOSED_PAREN_PAT;
+    # Long card prose with unclosed description parenthesis (restricted to recognized card headers)
+    my $is_card_ctx = ($t =~ /^\s*(?:$TS_PAT\s+)?(?:$TAG_PAT|\[(?:FIRING|RESOLVED)(?::\d+)?\])/i);
+    return 1 if $is_card_ctx && $raw_len >= 350 && $t =~ $UNCLOSED_PAREN_PAT;
 
     return 0;
 }
@@ -822,7 +823,7 @@ sub signal_message_public {
         # If waiting on an open line and current message is not a new post/header, stitch them
         my $clean_prefix = _clean_text($msg);
         $clean_prefix =~ s/^\s*$TS_PAT\s*//;
-        if ($st && $clean_prefix !~ /^\s*(?:$TAG_PAT|\[(?:FIRING|RESOLVED)|(?:\xF0\x9F\xAE\x87|🮇|\|)|(?:➥|\xE2\x9E\xA5|[-*])\s)/) {
+        if ($st && $clean_prefix !~ /^\s*(?:\[|\xF0\x9F\xAE\x87|🮇|\||(?:➥|\xE2\x9E\xA5|[-*])\s)/) {
             Irssi::timeout_remove($st->{timer}) if defined $st->{timer};
             my $cont_msg = $msg;
             $cont_msg =~ s/^\s*$FMT_RE$TS_PAT$FMT_RE\s*//;
