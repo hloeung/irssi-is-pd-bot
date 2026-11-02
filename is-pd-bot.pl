@@ -605,15 +605,20 @@ sub compact_timer_flush {
     my $st = delete $COMPACT_BUFFER{$key} or return;
     Irssi::timeout_remove($st->{timer}) if defined $st->{timer};
 
-    # Coordinate flushes: incorporate any pending line held by the rejoin timer before card emission
+    # Coordinate compact deadline: if an unfinished line belonging to this card is
+    # still held by the rejoin timer, defer flush and let rejoining finish through
+    # the normal handler.
     my $rejoin_key = ($st->{server}->{tag} // '') . '/' . lc($st->{target}) . '/' . lc($st->{nick});
-    if (exists $REJOIN_BUFFER{$rejoin_key}) {
-        my $rst = delete $REJOIN_BUFFER{$rejoin_key};
-        Irssi::timeout_remove($rst->{timer}) if defined $rst->{timer};
-        push @{$st->{lines}}, $rst->{msg};
+    if (exists $REJOIN_BUFFER{$rejoin_key}
+        && defined $REJOIN_BUFFER{$rejoin_key}->{compact_key}
+        && $REJOIN_BUFFER{$rejoin_key}->{compact_key} eq $key) {
+        my $ms = Irssi::settings_get_int('is_pd_bot_compact_timeout') || 500;
+        $COMPACT_BUFFER{$key} = $st;
+        $st->{timer} = Irssi::timeout_add_once($ms, 'compact_timer_flush', $key);
+        return;
     }
 
-    # Clear the active thread only when the flushed buffer owns it
+    # Clear active thread only if flushed buffer owns it
     if (exists $st->{channel_key} && defined $st->{tid}) {
         if (defined $COMPACT_ACTIVE_TID{$st->{channel_key}} &&
             $COMPACT_ACTIVE_TID{$st->{channel_key}} eq $st->{tid}) {
@@ -668,17 +673,55 @@ sub signal_message_public {
 
         if (_is_line_open($msg)) {
             my $ms = Irssi::settings_get_int('is_pd_bot_rejoin_timeout') || 500;
+            my $pending_compact_key;
+
+            if (Irssi::settings_get_bool('is_pd_bot_compact_format')) {
+                my $pagerduty_channel = get_pagerduty_channel();
+                my $is_pd_chan       = (lc($target) eq lc($pagerduty_channel) && lc($nick) eq lc($bot_nick));
+                my $is_messages_chan = (lc($target) eq '&messages' && lc($nick) eq lc("$bot_nick/$pagerduty_channel"));
+
+                if ($is_pd_chan || $is_messages_chan) {
+                    my $channel_key = ($server->{tag} // '') . '/' . lc($target) . '/' . lc($nick);
+                    my $is_block = ($msg =~ $BLOCK_PREFIX) ? 1 : 0;
+                    my $line_tid;
+
+                    if ($msg =~ /\[(?:->|↪)?\@\@([0-9a-z]{1,26}|\$[0-9A-Za-z\-_\.]{1,43})/) {
+                        $line_tid = $1;
+                    } elsif ($msg =~ /\[(?:->|↪)([0-9a-z]{1,26}|\$[0-9A-Za-z\-_\.]{1,43})(?:…|\.\.\.|\]|,)/) {
+                        $line_tid = $1;
+                    } elsif ($msg =~ /\[([0-9a-f]{3}|[0-9a-z]{26}|\$[0-9A-Za-z\-_\.]{1,43}|[0-9a-z]{1,25}(?:…|\.\.\.))\]/) {
+                        $line_tid = $1;
+                        $line_tid =~ s/(?:…|\.\.\.)$//;
+                    }
+                    $line_tid = resolve_thread_id($target, $line_tid) if $line_tid;
+                    if ($is_block) {
+                        $line_tid //= $COMPACT_ACTIVE_TID{$channel_key};
+                    }
+                    $pending_compact_key = $channel_key . '/' . ($line_tid // 'notid');
+
+                    # Coordinate compact deadline: extend this card's compact timer
+                    # so it cannot expire while rejoining is still pending.
+                    if (exists $COMPACT_BUFFER{$pending_compact_key}) {
+                        Irssi::timeout_remove($COMPACT_BUFFER{$pending_compact_key}->{timer}) if defined $COMPACT_BUFFER{$pending_compact_key}->{timer};
+                        my $c_timeout = Irssi::settings_get_int('is_pd_bot_compact_timeout') || 500;
+                        $COMPACT_BUFFER{$pending_compact_key}->{timer} = Irssi::timeout_add_once($ms + $c_timeout, 'compact_timer_flush', $pending_compact_key);
+                    }
+                }
+            }
+
             $REJOIN_BUFFER{$key} = {
-                server  => $server,
-                msg     => $msg,
-                nick    => $nick,
-                address => $address,
-                target  => $target,
-                timer   => Irssi::timeout_add_once($ms, 'timer_rejoin_flush', $key),
+                server      => $server,
+                msg         => $msg,
+                nick        => $nick,
+                address     => $address,
+                target      => $target,
+                compact_key => $pending_compact_key,
+                timer       => Irssi::timeout_add_once($ms, 'timer_rejoin_flush', $key),
             };
             Irssi::signal_stop();
             return;
         }
+
     }
 
     # Restrict PagerDuty caching and compact formatting to #is-pagerduty and &messages
@@ -690,6 +733,8 @@ sub signal_message_public {
     # Core is-pd-bot incident caching (operates on complete lines)
     my $server_tag = $server->{tag};
     my $tid;
+
+    my $status_pattern = qr/(?:🚨 TRIGGERED|🆗 ACKNOWLEDGED|(?:‼|‼️|!!) UNACKNOWLEDGED|📤 ESCALATED|📥 (?:RE)?ASSIGNED|💤 SNOOZED|✅ RESOLVED)/;
 
     if ($is_pd_chan || $is_messages_chan) {
         my $pd_id;
@@ -761,7 +806,6 @@ sub signal_message_public {
             $tid = $PENDING_TID{$server_tag};
         }
 
-        my $status_pattern = qr/(?:🚨 TRIGGERED|🆗 ACKNOWLEDGED|(?:‼|‼️|!!) UNACKNOWLEDGED|📤 ESCALATED|📥 (?:RE)?ASSIGNED|💤 SNOOZED|✅ RESOLVED)/;
         my ($url_pd_id) = $clean_msg =~ m{incidents/((?:P[A-Z0-9]{6}|Q[A-Z0-9]{13}))\b};
         my ($table_pd_id) = $message_content =~ /\A(?:🮇|\|)\s*((?:P[A-Z0-9]{6}|Q[A-Z0-9]{13}))\b/;
         my ($status_pd_id, $raw_status) = $message_content =~ /((?:P[A-Z0-9]{6}|Q[A-Z0-9]{13}))\s+.*?($status_pattern)/;
@@ -861,6 +905,11 @@ sub signal_message_public {
 
     # Presentation Layer (Buffer card if compact format enabled)
     if (Irssi::settings_get_bool('is_pd_bot_compact_format')) {
+        # Avoid re-buffering output that has already been compacted by another script or prior pass
+        my $is_already_compacted = ($msg =~ /(?:🮇|\|)\s*(?:➥|\xE2\x9E\xA5)/
+            || $msg =~ /$status_pattern\s+(?:\x02)?(?:P[A-Z0-9]{6}|Q[A-Z0-9]{13})\b/) ? 1 : 0;
+        return if $is_already_compacted;
+
         # Check block prefix at the valid anchor position
         my $is_block = ($msg =~ $BLOCK_PREFIX) ? 1 : 0;
 
