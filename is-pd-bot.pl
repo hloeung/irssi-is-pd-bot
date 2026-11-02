@@ -538,11 +538,15 @@ sub _compact_format_card {
     my ($alert_id, $status, $assignee) = ('', '', '');
     my (@table_headers, @extra_fields);
     my $in_table_row = 0;
+    my $in_actions = 0;
     my @kept_lines;
 
     foreach my $bl (@block_lines) {
         my $content = $bl;
         $content =~ s/$SPACE_RE/ /g;
+
+        # Strip thread reply quote if wrapped onto attachment block lines
+        $content =~ s/\s*\(re\s*\@.*?\)\s*$//;
 
         # Strip leading whitespace accepted by classifier before removing prefixes
         $content =~ s/^\s*//;
@@ -555,7 +559,7 @@ sub _compact_format_card {
         my $clean = _clean_text($content);
         $clean =~ s/^\s+|\s+$//g;
 
-        # Omit Table header (e.g. \x02Alert ID ... Status ... Assignee\x02) and record column order
+        # Omit Table header (\x02Alert ID ... Status ... Assignee\x02) and record column order
         if ($clean =~ /^Alert ID\s{2,}/) {
             @table_headers = split(/\s{2,}/, $clean);
             $in_table_row = 1;
@@ -576,23 +580,20 @@ sub _compact_format_card {
                         my $aid = _clean_text($row{$k});
                         $aid =~ s/^\s+|\s+$//g;
                         $alert_id = length($aid) ? "\x02$aid\x02" : '';
-                        delete $row{$k};
                     } elsif ($k =~ /^Status/i) {
                         $status = $row{$k};
                         $status =~ s/^\s+|\s+$//g;
-                        delete $row{$k};
                     } elsif ($k =~ /^Assignee/i) {
                         my $asn = _clean_text($row{$k});
                         $asn =~ s/^\@\s*//;
                         $asn =~ s/^\s+|\s+$//g;
                         $assignee = ($asn ne '[unknown to me]') ? $asn : '';
-                        delete $row{$k};
                     }
                 }
 
                 # Preserve additional fields (e.g. Service)
                 for my $h (@table_headers) {
-                    if (exists $row{$h} && length $row{$h}) {
+                    if ($h !~ /^(?:Alert ID|Status|Assignee)/i && exists $row{$h} && length $row{$h}) {
                         my $val = _clean_text($row{$h});
                         $val =~ s/^\s+|\s+$//g;
                         push @extra_fields, "($val)" if length $val;
@@ -606,19 +607,22 @@ sub _compact_format_card {
             next;
         }
 
-        # Omit "Actions" title (e.g. \x02Actions\x02)
-        if ($clean =~ /^Actions\s*$/) {
+        # Omit "Actions" title (\x02Actions\x02) and switch to actions mode
+        if ($clean =~ /^Actions\s*$/i) {
+            $in_actions = 1;
             next;
         }
 
-        # EVERYTHING ELSE: Keep it!
-        # Standardize complete UTF-8 bullet outside character classes
-        if ($content =~ s/^(?:➥|\xE2\x9E\xA5|\xE2\x80\xA2|[-*])\s*/➥ /) {
-            push @kept_lines, $content;
-        } elsif (@kept_lines && _is_line_open($kept_lines[-1])) {
-            # Only stitch when the preceding line is unfinished
-            my $sep = ($kept_lines[-1] =~ m{(?:https?://\S*|\()\z} || $kept_lines[-1] =~ /\s\z/) ? '' : ' ';
-            $kept_lines[-1] .= $sep . $content;
+        if ($in_actions) {
+            # In Actions section: start new line on bullet; otherwise join to previous line
+            if ($content =~ s/^(?:➥|\xE2\x9E\xA5|\xE2\x80\xA2|[-*])\s*/➥ /) {
+                push @kept_lines, $content;
+            } elsif (@kept_lines) {
+                my $sep = ($kept_lines[-1] =~ m{(?:https?://[^\s)]*|\()\z} || $kept_lines[-1] =~ /\s\z/) ? '' : ' ';
+                $kept_lines[-1] .= $sep . $content;
+            } else {
+                push @kept_lines, $content;
+            }
         } else {
             push @kept_lines, $content;
         }
