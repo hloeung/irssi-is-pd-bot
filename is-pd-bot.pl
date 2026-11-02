@@ -26,6 +26,9 @@ Irssi::settings_add_int('is_pd_bot', 'is_pd_bot_pagerduty_cache_size', 20);
 Irssi::settings_add_int('is_pd_bot', 'pagerduty_cache_size', -1);
 Irssi::settings_add_bool('is_pd_bot', 'is_pd_bot_rejoin_urls', 1);
 Irssi::settings_add_int('is_pd_bot', 'is_pd_bot_rejoin_timeout', 500);
+Irssi::settings_add_bool('is_pd_bot', 'is_pd_bot_compact_format', 0);
+Irssi::settings_add_int('is_pd_bot', 'is_pd_bot_compact_timeout', 500);
+
 
 sub get_pagerduty_cache_size {
     my $legacy = Irssi::settings_get_int('pagerduty_cache_size');
@@ -400,19 +403,44 @@ Irssi::command_bind('pagerduty_cache_purge', 'cmd_pagerduty_cache_clear');
 my %REJOIN_BUFFER;
 our $REJOINING = 0;
 
-sub _is_line_open {
+my %COMPACT_BUFFER;
+our $COMPACT_EMITTING = 0;
+
+my $SPACE_RE = qr/(?:\xc2\xa0|\x{a0}|\xe2\x80[\x80-\x8b]|\xe2\x80\xaf|\xe2\x81\x9f|\xe2\xa0\x80|\xe3\x80\x80|\xe3\x85\xa4)/;
+
+# Normalizes multi-byte Unicode spaces (NBSP, Braille blank, Hangul filler, etc.)
+sub _clean_text {
     my ($s) = @_;
+    return '' unless defined $s;
+    $s =~ s/$SPACE_RE/ /g;
     $s =~ s/\x03(?:\d{1,2}(?:,\d{1,2})?)?//g;
     $s =~ s/[\x02\x04\x0f\x11\x16\x1d\x1e\x1f]//g;
-    return 1 if $s =~ /\(https?:\/\/[^\s)]*$/ || $s =~ /\(\s*$/;
-    return 1 if $s =~ /(?:➥|\xE2\x9E\xA5)[^()]*$/ && $s !~ /https?:\/\//;
-    return 1 if length($s) >= 350 && $s =~ /(?:^|\s)https?:\/\/\S+$/;
+    return $s;
+}
+
+my $FMT_BYTE = qr/(?:[\x02\x04\x0f\x11\x16\x1d\x1e\x1f]|\x03(?:\d{1,2}(?:,\d{1,2})?)?)/;
+my $FMT_RE   = qr/$FMT_BYTE*/;
+my $TS_PAT = qr/(?:\[\d{4}-\d{2}-\d{2} \d{2}:\d{2}(?::\d{2})?\]|\[\d{1,2}:\d{2}(?::\d{2})?\]|\d{1,2}:\d{2}(?::\d{2})?>)/;
+
+sub _is_line_open {
+    my ($s) = @_;
+    my $t = _clean_text($s);
+    return 1 if $t =~ /\(https?:\/\/[^\s)]*$/ || $t =~ /\(\s*$/;
+    # Recognizable incomplete thread tag prefix (anchored at start of message)
+    return 1 if $t =~ /^\s*(?:$TS_PAT\s+)?\[(?:(?:->|↪)(?:\@\@)?|\@\@)[^\]]*$/;
+    # Preserves action bullet fragments that wrapped before the target URL
+    return 1 if $t =~ /(?:🮇|\|)\s*(?:➥|\xE2\x9E\xA5)\s+[A-Za-z][^()]*$/ && $t !~ /https?:\/\//;
+    return 1 if $t =~ /(?:🮇|\|)\s*[-*]\s+(?:View|Playbook|Source|Action|Silence)[^()]*$/i && $t !~ /https?:\/\//;
+    return 1 if length($t) >= 350 && $t =~ /(?:^|\s)https?:\/\/\S+$/;
     return 0;
 }
 
 sub _join_messages {
     my ($prev, $curr) = @_;
-    my $sep = ($prev =~ m{(?:https?://\S*|\()\z} || $prev =~ /\s\z/) ? '' : ' ';
+    # Do not insert space separator for partial URLs or color-formatted incomplete thread tag fragments
+    my $sep = ($prev =~ m{(?:https?://\S*|\()\z}
+            || $prev =~ m{^\s*(?:$FMT_RE$TS_PAT$FMT_RE\s+)?$FMT_RE\[(?:(?:->|↪)(?:\@\@)?|\@\@)[^\]]*\z}
+            || $prev =~ /\s\z/) ? '' : ' ';
     return $prev . $sep . $curr;
 }
 
@@ -424,22 +452,266 @@ sub timer_rejoin_flush {
     Irssi::signal_emit('message public', $st->{server}, $st->{msg}, $st->{nick}, $st->{address}, $st->{target});
 }
 
+my $TID_TOKEN = qr/(?:(?:->|↪)?\@\@(?:[0-9a-z]{1,26}|\$[0-9A-Za-z\-_\.]{1,43})(?:…|\.\.\.)?|(?:->|↪)(?:[0-9a-z]{1,26}|\$[0-9A-Za-z\-_\.]{1,43})(?:…|\.\.\.)?|(?:[0-9a-f]{3}|[0-9a-z]{26}|\$[0-9A-Za-z\-_\.]{43}|[0-9a-z]{1,25}(?:…|\.\.\.)))/;
+my $TAG_PAT = qr/\[$TID_TOKEN(?:,\s*$TID_TOKEN)*\]/;
+my $BLOCK_PREFIX = qr/^\s*(?:$FMT_RE$TS_PAT$FMT_RE\s+)?(?:$FMT_RE$TAG_PAT$FMT_RE\s+)?$FMT_RE\s*(?:🮇|\||\xF0\x9F\xAE\x87)/;
+
+sub _format_thread_tag {
+    my ($tag) = @_;
+    return $tag unless defined $tag && length $tag;
+
+    # Shorten recognized @@<id> tokens
+    $tag =~ s/\@\@([0-9a-z]{26}|\$[0-9A-Za-z\-_\.]{43})/short_thread_id($1)/ge;
+
+    # Ensure arrow indicator ↪ is present inside brackets
+    $tag =~ s/^\[(?![->|↪])/\[↪/;
+
+    # Colorize using the primary thread ID if tag is not already color-coded
+    if ($tag !~ /\x03/ && $tag =~ /([0-9a-z]{1,26})/i) {
+        my $col = thread_color($1);
+        $tag = "${col}${tag}\x0f";
+    }
+    return $tag;
+}
+
+sub _compact_format_card {
+    my ($lines) = @_;
+    my ($main, @block_lines);
+    foreach my $l (@$lines) {
+        # Anchored prefix check prevents descriptions with '|' from matching
+        if ($l =~ $BLOCK_PREFIX) {
+            push @block_lines, $l;
+        } elsif (!$main) {
+            $main = $l;
+        }
+    }
+    return @$lines unless @block_lines;
+
+    # Main line: extract replay timestamp, thread tag, description, and PagerDuty URL
+    my ($ts, $tag, $pd_url, $desc) = ('', '', '', '');
+    if ($main) {
+        my $m = $main;
+        $m =~ s/\s*\(re\s*\@.*?\)\s*$//;
+        $m =~ s/$SPACE_RE/ /g;
+
+        # Extract replay timestamp ([YYYY-MM-DD HH:MM], [H:MM], or H:MM>)
+        if ($m =~ s/^\s*($FMT_RE$TS_PAT$FMT_RE)\s*//) {
+            $ts = $1;
+        }
+
+        # Preserve the full thread token for downstream handlers
+        if ($m =~ s/^\s*($FMT_RE$TAG_PAT$FMT_RE)\s*//) {
+            $tag = $1;
+        }
+
+        if ($m =~ s/\s*\((https?:\/\/[^\s()]+)\)\s*$//) {
+            $pd_url = $1;
+        }
+        $m =~ s/^\s+|\s+$//g;
+        $desc = $m;
+    }
+
+    # Extract prefix from the first block line when main line is unavailable or untagged
+    if ((!length($ts) || !length($tag)) && @block_lines) {
+        my $bl0 = $block_lines[0];
+        $bl0 =~ s/$SPACE_RE/ /g;
+        # Always strip block timestamp so subsequent tag extraction can match leading tag
+        if ($bl0 =~ s/^\s*($FMT_RE$TS_PAT$FMT_RE)\s*//) {
+            $ts = $1 unless length($ts);
+        }
+        if (!length($tag) && $bl0 =~ s/^\s*($FMT_RE$TAG_PAT$FMT_RE)\s*//) {
+            $tag = $1;
+        }
+    }
+
+    # Extract colored bar from the first block line (preserves red, yellow, green, or blue pipe/block)
+    my $bar = "🮇 ";
+    if (@block_lines && $block_lines[0] =~ /^\s*(?:$FMT_RE$TS_PAT$FMT_RE\s+)?(?:$FMT_RE$TAG_PAT$FMT_RE\s+)?($FMT_RE\s*(?:🮇|\||\xF0\x9F\xAE\x87)\s*(?:\x0f|\x03)?)/) {
+        $bar = $1;
+        $bar =~ s/^\s+|\s+$//g;
+        $bar .= "\x0f" unless $bar =~ /\x0f$/;
+        $bar .= " ";
+    }
+
+    # Filter block lines: OMIT table header, table row, and Actions title.
+    #    KEEP everything else and seamlessly stitch wrapped continuation lines!
+    my ($alert_id, $status, $assignee) = ('', '', '');
+    my (@table_headers, @extra_fields);
+    my $in_table_row = 0;
+    my @kept_lines;
+
+    foreach my $bl (@block_lines) {
+        my $content = $bl;
+        $content =~ s/$SPACE_RE/ /g;
+
+        # Strip leading whitespace accepted by classifier before removing prefixes
+        $content =~ s/^\s*//;
+        $content =~ s/^$FMT_RE$TS_PAT$FMT_RE\s*//;
+        $content =~ s/^$FMT_RE$TAG_PAT$FMT_RE\s*//;
+        $content =~ s/^$FMT_RE(?:\xF0\x9F\xAE\x87|🮇|\|)$FMT_RE\s*//;
+        $content =~ s/^\s+|\s+$//g;
+        next if $content eq '';
+
+        my $clean = _clean_text($content);
+        $clean =~ s/^\s+|\s+$//g;
+
+        # Omit Table header (e.g. \x02Alert ID ... Status ... Assignee\x02) and record column order
+        if ($clean =~ /^Alert ID\s{2,}/) {
+            @table_headers = split(/\s{2,}/, $clean);
+            $in_table_row = 1;
+            next;
+        }
+
+        # Omit Table data row (dynamically parse by header, preserve extra fields)
+        if ($in_table_row) {
+            my @parts = split(/\s{2,}/, $content);
+            if (@parts >= 2) {
+                my %row;
+                for my $i (0 .. $#table_headers) {
+                    $row{$table_headers[$i]} = $parts[$i] if defined $parts[$i];
+                }
+
+                for my $k (keys %row) {
+                    if ($k =~ /^Alert ID/i) {
+                        my $aid = _clean_text($row{$k});
+                        $aid =~ s/^\s+|\s+$//g;
+                        $alert_id = length($aid) ? "\x02$aid\x02" : '';
+                        delete $row{$k};
+                    } elsif ($k =~ /^Status/i) {
+                        $status = $row{$k};
+                        $status =~ s/^\s+|\s+$//g;
+                        delete $row{$k};
+                    } elsif ($k =~ /^Assignee/i) {
+                        my $asn = _clean_text($row{$k});
+                        $asn =~ s/^\@\s*//;
+                        $asn =~ s/^\s+|\s+$//g;
+                        $assignee = ($asn ne '[unknown to me]') ? $asn : '';
+                        delete $row{$k};
+                    }
+                }
+
+                # Preserve additional fields (e.g. Service)
+                for my $h (@table_headers) {
+                    if (exists $row{$h} && length $row{$h}) {
+                        my $val = _clean_text($row{$h});
+                        $val =~ s/^\s+|\s+$//g;
+                        push @extra_fields, "($val)" if length $val;
+                    }
+                }
+            } else {
+                # Preserve unparseable table row rather than silently dropping it
+                push @kept_lines, $content;
+            }
+            $in_table_row = 0;
+            next;
+        }
+
+        # Omit "Actions" title (e.g. \x02Actions\x02)
+        if ($clean =~ /^Actions\s*$/) {
+            next;
+        }
+
+        # EVERYTHING ELSE: Keep it!
+        # Standardize complete UTF-8 bullet outside character classes
+        if ($content =~ s/^(?:➥|\xE2\x9E\xA5|\xE2\x80\xA2|[-*])\s*/➥ /) {
+            push @kept_lines, $content;
+        } elsif (@kept_lines && _is_line_open($kept_lines[-1])) {
+            # Only stitch when the preceding line is unfinished
+            my $sep = ($kept_lines[-1] =~ m{(?:https?://\S*|\()\z} || $kept_lines[-1] =~ /\s\z/) ? '' : ' ';
+            $kept_lines[-1] .= $sep . $content;
+        } else {
+            push @kept_lines, $content;
+        }
+    }
+
+    # Construct compact output
+    my @out;
+    my $first = join(' ', grep { length($_) } ($ts, $tag, $status, $alert_id, $desc, @extra_fields));
+    $first .= " @ $assignee" if length($assignee);
+    push @out, $first if length($first);
+
+    my $bullet_pfx = join(' ', grep { length($_) } ($ts, $tag));
+    $bullet_pfx .= " " if length($bullet_pfx);
+
+    push @out, "${bullet_pfx}${bar}➥ \x1f\x1dPagerDuty\x1d\x1f (\x1d$pd_url\x1d)" if length($pd_url);
+    foreach my $l (@kept_lines) {
+        push @out, "${bullet_pfx}${bar}$l";
+    }
+
+    return @out;
+}
+
+my %COMPACT_ACTIVE_TID;
+
+sub compact_timer_flush {
+    my ($key) = @_;
+    my $st = delete $COMPACT_BUFFER{$key} or return;
+    Irssi::timeout_remove($st->{timer}) if defined $st->{timer};
+
+    # Coordinate compact deadline: if an unfinished line belonging to this card is
+    # still held by the rejoin timer, defer flush and let rejoining finish through
+    # the normal handler.
+    my $rejoin_key = ($st->{server}->{tag} // '') . '/' . lc($st->{target}) . '/' . lc($st->{nick});
+    if (exists $REJOIN_BUFFER{$rejoin_key}
+        && defined $REJOIN_BUFFER{$rejoin_key}->{compact_key}
+        && $REJOIN_BUFFER{$rejoin_key}->{compact_key} eq $key) {
+        my $ms = Irssi::settings_get_int('is_pd_bot_compact_timeout') || 500;
+        $COMPACT_BUFFER{$key} = $st;
+        $st->{timer} = Irssi::timeout_add_once($ms, 'compact_timer_flush', $key);
+        return;
+    }
+
+    # Clear active thread only if flushed buffer owns it
+    if (exists $st->{channel_key} && defined $st->{tid}) {
+        if (defined $COMPACT_ACTIVE_TID{$st->{channel_key}} &&
+            $COMPACT_ACTIVE_TID{$st->{channel_key}} eq $st->{tid}) {
+            delete $COMPACT_ACTIVE_TID{$st->{channel_key}};
+        }
+    }
+
+    my @lines = _compact_format_card($st->{lines});
+    return unless @lines;
+
+    # Re-emit through message public so downstream handlers receive alerts
+    local $COMPACT_EMITTING = 1;
+    foreach my $l (@lines) {
+        Irssi::signal_emit('message public', $st->{server}, $l, $st->{nick}, $st->{address}, $st->{target});
+    }
+}
+
 sub signal_message_public {
     my ($server, $msg, $nick, $address, $target) = @_;
 
+    # Allow compact re-emitted lines to pass straight through to Irssi display
+    return if $COMPACT_EMITTING;
     return unless $server && defined($msg) && defined($nick) && defined($target) && chatnet_enabled($server);
     my $bot_nick = ($BOT_NICK //= Irssi::settings_get_str('is_pd_bot_nick'));
-    return unless lc($nick) eq lc($bot_nick);
 
+    # Accept bot nick in any channel, or scrollback nick in &messages
+    return unless lc($nick) eq lc($bot_nick)
+        || (lc($target) eq '&messages' && lc($nick) =~ m{^\Q$bot_nick\E/});
+
+    # Include sender nick in the rejoin key to keep &messages streams separate
+    my $key = ($server->{tag} // '') . '/' . lc($target) . '/' . lc($nick);
+
+    # Core is-pd-bot incident caching (operates on complete lines)
+    my $server_tag = $server->{tag};
+    my $tid;
+
+    # Line Healing (Rejoin split URLs and action bullets) - active in ALL bot channels
     if (Irssi::settings_get_bool('is_pd_bot_rejoin_urls') && !$REJOINING) {
-        my $key = ($server->{tag} // '') . '/' . lc($target);
         my $st = $REJOIN_BUFFER{$key};
 
-        # If waiting on an open line and current message is not a new post/header, stitch them
-        if ($st && $msg !~ /^\s*(?:\[|\xF0\x9F\xAE\x87|🮇|\|)/) {
+        # If waiting on an open line and current message is not a new post/header/bullet, stitch them
+        my $clean_prefix = _clean_text($msg);
+        $clean_prefix =~ s/^\s*$TS_PAT\s*//;
+        if ($st && $clean_prefix !~ /^\s*(?:\[|\xF0\x9F\xAE\x87|🮇|\||(?:➥|\xE2\x9E\xA5|[-*])\s)/) {
             Irssi::timeout_remove($st->{timer}) if defined $st->{timer};
-            $msg = _join_messages($st->{msg}, $msg);
+            my $cont_msg = $msg;
+            $cont_msg =~ s/^\s*$FMT_RE$TS_PAT$FMT_RE\s*//;
+            $msg = _join_messages($st->{msg}, $cont_msg);
             delete $REJOIN_BUFFER{$key};
+
             unless (_is_line_open($msg)) {
                 local $REJOINING = 1;
                 Irssi::signal_emit('message public', $server, $msg, $nick, $address, $target);
@@ -453,61 +725,117 @@ sub signal_message_public {
 
         if (_is_line_open($msg)) {
             my $ms = Irssi::settings_get_int('is_pd_bot_rejoin_timeout') || 500;
+            my $pending_compact_key;
+
+            if (Irssi::settings_get_bool('is_pd_bot_compact_format')) {
+                my $pagerduty_channel = get_pagerduty_channel();
+                my $is_pd_chan       = (lc($target) eq lc($pagerduty_channel) && lc($nick) eq lc($bot_nick));
+                my $is_messages_chan = (lc($target) eq '&messages' && lc($nick) eq lc("$bot_nick/$pagerduty_channel"));
+
+                if ($is_pd_chan || $is_messages_chan) {
+                    my $channel_key = ($server->{tag} // '') . '/' . lc($target) . '/' . lc($nick);
+                    my $is_block = ($msg =~ $BLOCK_PREFIX) ? 1 : 0;
+                    my $line_tid;
+
+                    # Extract thread IDs only from leading tags after optional timestamp
+                    my $leading = $msg;
+                    $leading =~ s/^\s*//;
+                    $leading =~ s/^$FMT_RE$TS_PAT$FMT_RE\s*//;
+
+                    if ($leading =~ /^$FMT_RE\[(?:->|↪)?\@\@([0-9a-z]{1,26}|\$[0-9A-Za-z\-_\.]{1,43})/) {
+                        $line_tid = $1;
+                    } elsif ($leading =~ /^$FMT_RE\[(?:->|↪)([0-9a-z]{1,26}|\$[0-9A-Za-z\-_\.]{1,43})(?:…|\.\.\.|\]|,)/) {
+                        $line_tid = $1;
+                    } elsif ($leading =~ /^$FMT_RE\[([0-9a-f]{3}|[0-9a-z]{26}|\$[0-9A-Za-z\-_\.]{1,43}|[0-9a-z]{1,25}(?:…|\.\.\.))\]/) {
+                        $line_tid = $1;
+                        $line_tid =~ s/(?:…|\.\.\.)$//;
+                    }
+                    $line_tid = resolve_thread_id($target, $line_tid) if $line_tid;
+
+                    # Expand cached thread ID prefixes before computing rejoin keys
+                    if ($line_tid && !is_canonical_tid($line_tid) && exists $THREAD_PD_MAP{$server_tag}
+                        && !exists $THREAD_PD_MAP{$server_tag}{$line_tid}) {
+                        my @matches = grep {
+                            is_canonical_tid($_) && index($_, $line_tid) == 0
+                        } keys %{$THREAD_PD_MAP{$server_tag}};
+                        $line_tid = $matches[0] if @matches == 1;
+                    }
+
+                    if ($is_block) {
+                        $line_tid //= $COMPACT_ACTIVE_TID{$channel_key};
+                    }
+                    $pending_compact_key = $channel_key . '/' . ($line_tid // 'notid');
+                }
+            }
+
             $REJOIN_BUFFER{$key} = {
-                server  => $server,
-                msg     => $msg,
-                nick    => $nick,
-                address => $address,
-                target  => $target,
-                timer   => Irssi::timeout_add_once($ms, 'timer_rejoin_flush', $key),
+                server      => $server,
+                msg         => $msg,
+                nick        => $nick,
+                address     => $address,
+                target      => $target,
+                compact_key => $pending_compact_key,
+                timer       => Irssi::timeout_add_once($ms, 'timer_rejoin_flush', $key),
             };
             Irssi::signal_stop();
             return;
         }
+
     }
 
+    # Restrict PagerDuty caching and compact formatting to #is-pagerduty and &messages
     my $pagerduty_channel = get_pagerduty_channel();
-    my $server_tag = $server->{tag};
+    my $is_pd_chan       = (lc($target) eq lc($pagerduty_channel) && lc($nick) eq lc($bot_nick));
+    my $is_messages_chan = (lc($target) eq '&messages' && lc($nick) eq lc("$bot_nick/$pagerduty_channel"));
+    return unless ($is_pd_chan || $is_messages_chan);
 
-    if (lc($target) eq lc($pagerduty_channel)) {
+    my $status_pattern = qr/(?:🚨 TRIGGERED|🆗 ACKNOWLEDGED|(?:‼|‼️|!!) UNACKNOWLEDGED|📤 ESCALATED|📥 (?:RE)?ASSIGNED|💤 SNOOZED|✅ RESOLVED)/;
+
+    my $clean_msg = $msg;
+    $clean_msg =~ s/\x03(?:\d{1,2}(?:,\d{1,2})?)?//g;
+    $clean_msg =~ s/[\x02\x0f\x16\x1d\x1f]//g;
+    $clean_msg =~ s/$SPACE_RE/ /g;
+    my $bot_quote = qr/\Q${bot_nick}\E(?:\/\Q${pagerduty_channel}\E)?/;
+    $clean_msg =~ s/\(re (?>[^()]|(?<paren>\((?>[^()]|(?&paren))*\)))*?\@$bot_quote: (?>[^()]|(?&paren))*\)//g;
+    $clean_msg =~ s/\(re [^)]*?\@$bot_quote: .*?\)//g;
+
+    # Extract thread ID only from leading tag after optional timestamp
+    my $leading_tag_msg = $clean_msg;
+    $leading_tag_msg =~ s/^\s*//;
+    $leading_tag_msg =~ s/^$TS_PAT\s*//;
+
+    if ($leading_tag_msg =~ /^\[(?:->|↪)?\@\@([0-9a-z]{1,26}|\$[0-9A-Za-z\-_\.]{1,43})/) {
+        $tid = $1;
+    } elsif ($leading_tag_msg =~ /^\[(?:->|↪)([0-9a-z]{1,26}|\$[0-9A-Za-z\-_\.]{1,43})(?:…|\.\.\.|\]|,)/) {
+        $tid = $1;
+    } elsif ($leading_tag_msg =~ /^\[([0-9a-f]{3}|[0-9a-z]{26}|\$[0-9A-Za-z\-_\.]{1,43}|[0-9a-z]{1,25}(?:…|\.\.\.))\]/) {
+        $tid = $1;
+        $tid =~ s/(?:…|\.\.\.)$//;
+    }
+    $tid = resolve_thread_id($target, $tid) if $tid;
+    # Explicit prefixes can outlive pending continuations; only expand a unique full ID.
+    if ($tid && !is_canonical_tid($tid) && exists $THREAD_PD_MAP{$server_tag}
+        && !exists $THREAD_PD_MAP{$server_tag}{$tid}) {
+        my @matches = grep {
+            is_canonical_tid($_) && index($_, $tid) == 0
+        } keys %{$THREAD_PD_MAP{$server_tag}};
+        $tid = $matches[0] if @matches == 1;
+    }
+    my $explicit_tid = $tid;
+    my $message_content = $clean_msg;
+
+    # Strip all supported replay timestamp forms before cache parsing
+    $message_content =~ s/^$TS_PAT\s*//;
+    if ($explicit_tid) {
+        $message_content =~ s/^\[(?:->|↪)?(?:\@\@)?(?:[0-9a-z]{1,26}|\$[0-9A-Za-z\-_\.]{1,43})(?:…|\.\.\.)?(?:,[^\]]+)?\]\s*//;
+    }
+
+    # Prevent historical replay from modifying the live incident cache
+    my $is_replay = ($is_messages_chan || $clean_msg =~ /^\s*$TS_PAT/);
+
+    if ($is_pd_chan && !$is_replay) {
         my $pd_id;
         my $cache = ($PD_CACHE{$server_tag} //= []);
-
-        # Ordering matters, TRIGGERED can also be part of the
-        # parent/thread msg. Ignore thread reply quotes so
-        # quoted parent incidents don't re-enter the cache.
-        my $clean_msg = $msg;
-        $clean_msg =~ s/\x03(?:\d{1,2}(?:,\d{1,2})?)?//g;
-        $clean_msg =~ s/[\x02\x0f\x16\x1d\x1f]//g;
-        $clean_msg =~ s/(?:\xc2\xa0|\x{a0})/ /g;
-        $clean_msg =~ s/\(re (?>[^()]|(?<paren>\((?>[^()]|(?&paren))*\)))*?\@\Q${bot_nick}\E: (?>[^()]|(?&paren))*\)//g;
-        $clean_msg =~ s/\(re [^)]*?\@\Q${bot_nick}\E: .*?\)//g;
-
-        # Extract thread ID from message brackets if present
-        my $tid;
-        if ($clean_msg =~ /\[(?:->|↪)?\@\@([0-9a-z]{1,26}|\$[0-9A-Za-z\-_\.]{1,43})/) {
-            $tid = $1;
-        } elsif ($clean_msg =~ /\[(?:->|↪)([0-9a-z]{1,26}|\$[0-9A-Za-z\-_\.]{1,43})(?:…|\.\.\.|\]|,)/) {
-            $tid = $1;
-        } elsif ($clean_msg =~ /\[([0-9a-f]{3}|[0-9a-z]{26}|\$[0-9A-Za-z\-_\.]{1,43}|[0-9a-z]{1,25}(?:…|\.\.\.))\]/) {
-            $tid = $1;
-            $tid =~ s/(?:…|\.\.\.)$//;
-        }
-        $tid = resolve_thread_id($target, $tid) if $tid;
-        # Explicit prefixes can outlive pending continuations; only expand a unique full ID.
-        if ($tid && !is_canonical_tid($tid) && exists $THREAD_PD_MAP{$server_tag}
-            && !exists $THREAD_PD_MAP{$server_tag}{$tid}) {
-            my @matches = grep {
-                is_canonical_tid($_) && index($_, $tid) == 0
-            } keys %{$THREAD_PD_MAP{$server_tag}};
-            $tid = $matches[0] if @matches == 1;
-        }
-        my $explicit_tid = $tid;
-        my $message_content = $clean_msg;
-        $message_content =~ s/^\[\d{4}-\d{2}-\d{2} \d{2}:\d{2}(?::\d{2})?\]\s*//;
-        if ($explicit_tid) {
-            $message_content =~ s/^\[(?:->|↪)?(?:\@\@)?(?:[0-9a-z]{1,26}|\$[0-9A-Za-z\-_\.]{1,43})(?:…|\.\.\.)?(?:,[^\]]+)?\]\s*//;
-        }
 
         # Wrapped lines must arrive promptly; unrelated posts must not inherit stale context.
         if (exists $PENDING_SINCE{$server_tag} && time - $PENDING_SINCE{$server_tag} > 5) {
@@ -539,7 +867,6 @@ sub signal_message_public {
             $tid = $PENDING_TID{$server_tag};
         }
 
-        my $status_pattern = qr/(?:🚨 TRIGGERED|🆗 ACKNOWLEDGED|(?:‼|‼️|!!) UNACKNOWLEDGED|📤 ESCALATED|📥 (?:RE)?ASSIGNED|💤 SNOOZED|✅ RESOLVED)/;
         my ($url_pd_id) = $clean_msg =~ m{incidents/((?:P[A-Z0-9]{6}|Q[A-Z0-9]{13}))\b};
         my ($table_pd_id) = $message_content =~ /\A(?:🮇|\|)\s*((?:P[A-Z0-9]{6}|Q[A-Z0-9]{13}))\b/;
         my ($status_pd_id, $raw_status) = $message_content =~ /((?:P[A-Z0-9]{6}|Q[A-Z0-9]{13}))\s+.*?($status_pattern)/;
@@ -636,15 +963,78 @@ sub signal_message_public {
             }
         }
     }
-};
+
+    # Presentation Layer (Buffer card if compact format enabled)
+    if (Irssi::settings_get_bool('is_pd_bot_compact_format')) {
+        # Avoid re-buffering output that has already been compacted by another script or prior pass
+        my $is_already_compacted = ($msg =~ /$status_pattern\s+(?:\x02)?(?:P[A-Z0-9]{6}|Q[A-Z0-9]{13})\b/
+            || $msg =~ /(?:🮇|\|)\s*(?:➥|\xE2\x9E\xA5)\s*(?:\x1f\x1d)?PagerDuty(?:\x1d\x1f)?\s*\(/) ? 1 : 0;
+        return if $is_already_compacted;
+
+        # Check block prefix at the valid anchor position
+        my $is_block = ($msg =~ $BLOCK_PREFIX) ? 1 : 0;
+
+        # Track card thread independently of cache state so subsequent lines keep their thread
+        my $channel_key = ($server->{tag} // '') . '/' . lc($target) . '/' . lc($nick);
+        if ($is_block) {
+            $tid //= $COMPACT_ACTIVE_TID{$channel_key};
+        }
+
+        my $compact_key = $channel_key . '/' . ($tid // 'notid');
+        my $st = $COMPACT_BUFFER{$compact_key};
+
+        if ($st && $is_block) {
+            # Bound buffer to prevent unbounded memory growth
+            if (@{$st->{lines}} < 50) {
+                push @{$st->{lines}}, $msg;
+            } else {
+                compact_timer_flush($compact_key);
+                return;
+            }
+        } else {
+            compact_timer_flush($compact_key) if $st;
+            # Install replacement state after flushing the old card
+            $COMPACT_ACTIVE_TID{$channel_key} = $tid unless $is_block;
+
+            $COMPACT_BUFFER{$compact_key} = {
+                server      => $server,
+                nick        => $nick,
+                address     => $address,
+                target      => $target,
+                channel_key => $channel_key,
+                tid         => $tid,
+                lines       => [$msg],
+            };
+        }
+
+        Irssi::timeout_remove($COMPACT_BUFFER{$compact_key}->{timer}) if defined $COMPACT_BUFFER{$compact_key}->{timer};
+        my $ms = Irssi::settings_get_int('is_pd_bot_compact_timeout') || 500;
+        $COMPACT_BUFFER{$compact_key}->{timer} = Irssi::timeout_add_once($ms, 'compact_timer_flush', $compact_key);
+
+        Irssi::signal_stop();
+        return;
+    }
+}
 Irssi::signal_add_first('message public', 'signal_message_public');
+
 Irssi::signal_add('server disconnected', sub {
     my ($server) = @_;
     return unless $server && defined $server->{tag};
     my $pfx = $server->{tag} . '/';
+    # Cancel pending rejoin timers before flushing
     for my $k (grep { index($_, $pfx) == 0 } keys %REJOIN_BUFFER) {
         my $st = delete $REJOIN_BUFFER{$k};
-        Irssi::timeout_remove($st->{timer}) if $st && $st->{timer};
+        if ($st) {
+            Irssi::timeout_remove($st->{timer}) if defined $st->{timer};
+            local $REJOINING = 1;
+            Irssi::signal_emit('message public', $st->{server}, $st->{msg}, $st->{nick}, $st->{address}, $st->{target});
+        }
+    }
+    # Cancel pending compact timers before flushing
+    for my $k (grep { index($_, $pfx) == 0 } keys %COMPACT_BUFFER) {
+        my $st = $COMPACT_BUFFER{$k};
+        Irssi::timeout_remove($st->{timer}) if $st && defined $st->{timer};
+        compact_timer_flush($k);
     }
 });
 
@@ -657,7 +1047,9 @@ sub signal_complete_word_pagerduty {
     my $server_tag = $window->{active_server}->{tag};
 
     my $pagerduty_channel = get_pagerduty_channel();
-    return unless (lc($window->{active}->{name}) eq lc($pagerduty_channel) || $window->{active}->{name} =~ /^@@/);
+    return unless (lc($window->{active}->{name}) eq lc($pagerduty_channel)
+                   || lc($window->{active}->{name}) eq '&messages'
+                   || $window->{active}->{name} =~ /^@@/);
 
     return unless $word =~ /^[PQ]/i;
 
@@ -725,7 +1117,9 @@ sub cmd_pagerduty_cache_search {
     my ($data, $server, $wi) = @_;
 
     my $pagerduty_channel = get_pagerduty_channel();
-    return unless ref $wi and (lc($wi->{name}) eq lc($pagerduty_channel) || $wi->{name} =~ /^@@/);
+    return unless ref $wi and (lc($wi->{name}) eq lc($pagerduty_channel)
+                               || lc($wi->{name}) eq '&messages'
+                               || $wi->{name} =~ /^@@/);
 
     return unless chatnet_enabled($server);
 
