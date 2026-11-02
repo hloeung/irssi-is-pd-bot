@@ -422,23 +422,27 @@ my $FMT_BYTE = qr/(?:[\x02\x04\x0f\x11\x16\x1d\x1e\x1f]|\x03(?:\d{1,2}(?:,\d{1,2
 my $FMT_RE   = qr/$FMT_BYTE*/;
 my $TS_PAT = qr/(?:\[\d{4}-\d{2}-\d{2} \d{2}:\d{2}(?::\d{2})?\]|\[\d{1,2}:\d{2}(?::\d{2})?\]|\d{1,2}:\d{2}(?::\d{2})?>)/;
 
+# Matches an unclosed wrapped URL (https://... allowing balanced internal parentheses),
+# an unclosed opening parenthesis, or an unclosed bare URL
+my $OPEN_URL_PAT = qr/(?:\(https?:\/\/(?>[^()]|(?<paren>\((?>[^()]|(?&paren))*\)))*|\(\s*|(?<!\()https?:\/\/\S+)\z/;
+
 sub _is_line_open {
     my ($s) = @_;
     my $t = _clean_text($s);
-    return 1 if $t =~ /\(https?:\/\/[^\s)]*$/ || $t =~ /\(\s*$/;
+    return 1 if $t =~ /\(https?:\/\/(?>[^()]|(?<paren>\((?>[^()]|(?&paren))*\)))*$/ || $t =~ /\(\s*$/;
     # Recognizable incomplete thread tag prefix (anchored at start of message)
     return 1 if $t =~ /^\s*(?:$TS_PAT\s+)?\[(?:(?:->|↪)(?:\@\@)?|\@\@)[^\]]*$/;
-    # Preserves action bullet fragments that wrapped before the target URL
-    return 1 if $t =~ /(?:🮇|\|)\s*(?:➥|\xE2\x9E\xA5)\s+[A-Za-z][^()]*$/ && $t !~ /https?:\/\//;
-    return 1 if $t =~ /(?:🮇|\|)\s*[-*]\s+(?:View|Playbook|Source|Action|Silence)[^()]*$/i && $t !~ /https?:\/\//;
+    # Preserves supported arrow patterns without URL
+    return 1 if $t =~ /(?:➥|\xE2\x9E\xA5)[^()]*$/ && $t !~ /https?:\/\//;
+    # Preserves action bullet fragments without URL before continuation
+    return 1 if $t =~ /(?:^|(?:🮇|\|))\s*(?:➥|\xE2\x9E\xA5|[-*])\s+[A-Za-z][^()]*$/ && $t !~ /https?:\/\//;
     return 1 if length($t) >= 350 && $t =~ /(?:^|\s)https?:\/\/\S+$/;
     return 0;
 }
 
 sub _join_messages {
     my ($prev, $curr) = @_;
-    # Do not insert space separator for partial URLs or color-formatted incomplete thread tag fragments
-    my $sep = ($prev =~ m{(?:https?://\S*|\()\z}
+    my $sep = ($prev =~ $OPEN_URL_PAT
             || $prev =~ m{^\s*(?:$FMT_RE$TS_PAT$FMT_RE\s+)?$FMT_RE\[(?:(?:->|↪)(?:\@\@)?|\@\@)[^\]]*\z}
             || $prev =~ /\s\z/) ? '' : ' ';
     return $prev . $sep . $curr;
