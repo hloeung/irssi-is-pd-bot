@@ -584,6 +584,19 @@ sub _compact_format_card {
         $bar .= " ";
     }
 
+    # Only include timestamp and thread tag on bullets if the attachment block lines originally had them
+    my ($block_ts, $block_tag) = ('', '');
+    if (@block_lines) {
+        my $bl0 = $block_lines[0];
+        $bl0 =~ s/$SPACE_RE/ /g;
+        if ($bl0 =~ s/^\s*($FMT_RE$TS_PAT$FMT_RE)\s*//) {
+            $block_ts = $1;
+        }
+        if ($bl0 =~ s/^\s*($FMT_RE$TAG_PAT$FMT_RE)\s*//) {
+            $block_tag = $1;
+        }
+    }
+
     # Filter block lines: OMIT table header, table row, and Actions title.
     #    KEEP everything else and seamlessly stitch wrapped continuation lines!
     my ($alert_id, $status, $assignee) = ('', '', '');
@@ -700,7 +713,7 @@ sub _compact_format_card {
     $first .= " @ $assignee" if length($assignee);
     push @out, $first if length($first);
 
-    my $bullet_pfx = join(' ', grep { length($_) } ($ts, $tag));
+    my $bullet_pfx = join(' ', grep { length($_) } ($block_ts, $block_tag));
     $bullet_pfx .= " " if length($bullet_pfx);
 
     push @out, "${bullet_pfx}${bar} ➥ \x1f\x1dPagerDuty\x1d\x1f (\x1d$pd_url\x1d)" if length($pd_url);
