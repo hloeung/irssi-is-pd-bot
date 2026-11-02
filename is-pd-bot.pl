@@ -604,7 +604,23 @@ sub compact_timer_flush {
     my ($key) = @_;
     my $st = delete $COMPACT_BUFFER{$key} or return;
     Irssi::timeout_remove($st->{timer}) if defined $st->{timer};
-    delete $COMPACT_ACTIVE_TID{$st->{channel_key}} if exists $st->{channel_key};
+
+    # Coordinate flushes: incorporate any pending line held by the rejoin timer before card emission
+    my $rejoin_key = ($st->{server}->{tag} // '') . '/' . lc($st->{target}) . '/' . lc($st->{nick});
+    if (exists $REJOIN_BUFFER{$rejoin_key}) {
+        my $rst = delete $REJOIN_BUFFER{$rejoin_key};
+        Irssi::timeout_remove($rst->{timer}) if defined $rst->{timer};
+        push @{$st->{lines}}, $rst->{msg};
+    }
+
+    # Clear the active thread only when the flushed buffer owns it
+    if (exists $st->{channel_key} && defined $st->{tid}) {
+        if (defined $COMPACT_ACTIVE_TID{$st->{channel_key}} &&
+            $COMPACT_ACTIVE_TID{$st->{channel_key}} eq $st->{tid}) {
+            delete $COMPACT_ACTIVE_TID{$st->{channel_key}};
+        }
+    }
+
     my @lines = _compact_format_card($st->{lines});
     return unless @lines;
 
@@ -852,8 +868,6 @@ sub signal_message_public {
         my $channel_key = ($server->{tag} // '') . '/' . lc($target) . '/' . lc($nick);
         if ($is_block) {
             $tid //= $COMPACT_ACTIVE_TID{$channel_key};
-        } else {
-            $COMPACT_ACTIVE_TID{$channel_key} = $tid;
         }
 
         my $compact_key = $channel_key . '/' . ($tid // 'notid');
@@ -869,12 +883,16 @@ sub signal_message_public {
             }
         } else {
             compact_timer_flush($compact_key) if $st;
+            # Install replacement state after flushing the old card
+            $COMPACT_ACTIVE_TID{$channel_key} = $tid unless $is_block;
+
             $COMPACT_BUFFER{$compact_key} = {
                 server      => $server,
                 nick        => $nick,
                 address     => $address,
                 target      => $target,
                 channel_key => $channel_key,
+                tid         => $tid,
                 lines       => [$msg],
             };
         }
