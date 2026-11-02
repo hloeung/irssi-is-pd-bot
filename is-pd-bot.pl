@@ -704,7 +704,9 @@ sub signal_message_public {
         my $st = $REJOIN_BUFFER{$key};
 
         # If waiting on an open line and current message is not a new post/header, stitch them
-        if ($st && _clean_text($msg) !~ /^\s*(?:\[|\xF0\x9F\xAE\x87|🮇|\|)/) {
+        my $clean_prefix = _clean_text($msg);
+        $clean_prefix =~ s/^\s*$TS_PAT\s*//;
+        if ($st && $clean_prefix !~ /^\s*(?:\[|\xF0\x9F\xAE\x87|🮇|\|)/) {
             Irssi::timeout_remove($st->{timer}) if defined $st->{timer};
             $msg = _join_messages($st->{msg}, $msg);
             delete $REJOIN_BUFFER{$key};
