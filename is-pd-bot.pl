@@ -425,6 +425,11 @@ my $TID_TOKEN    = qr/(?:(?:->|↪)?\@\@(?:[0-9a-z]{1,26}|\$[0-9A-Za-z\-_\.]{1,4
 my $TAG_PAT      = qr/\[$TID_TOKEN(?:,\s*$TID_TOKEN)*\]/;
 my $BLOCK_PREFIX = qr/^\s*(?:$FMT_RE$TS_PAT$FMT_RE\s+)?(?:$FMT_RE$TAG_PAT$FMT_RE\s+)?$FMT_RE\s*(?:🮇|\||\xF0\x9F\xAE\x87)/;
 
+# Distinguishes genuine bot post boundaries from bracketed/bullet prose continuations
+my $INCOMPLETE_TAG   = qr/\[(?:(?:->|↪)(?:\@\@)?|\@\@)[^\]]*/;
+my $LOG_ALERT_HEADER = qr/\[(?:FIRING|RESOLVED|WARNING|ERROR|INFO|DEBUG|CRITICAL|ALERT|OK|CRIT|WARN)(?::|\s|\])/i;
+my $NEW_MSG_BOUNDARY = qr/^\s*(?:$TAG_PAT|$INCOMPLETE_TAG|$LOG_ALERT_HEADER|(?:\xF0\x9F\xAE\x87|🮇|\|)|(?:➥|\xE2\x9E\xA5)\s)/;
+
 # Matches an unclosed wrapped URL (allowing balanced or unfinished internal parens)
 # or an unclosed opening parenthesis before a URL
 my $UNCLOSED_URL_PAT = qr{
@@ -822,7 +827,7 @@ sub signal_message_public {
         # If waiting on an open line and current message is not a new post/header, stitch them
         my $clean_prefix = _clean_text($msg);
         $clean_prefix =~ s/^\s*$TS_PAT\s*//;
-        if ($st && $clean_prefix !~ /^\s*(?:\[|\xF0\x9F\xAE\x87|🮇|\||(?:➥|\xE2\x9E\xA5|[-*])\s)/) {
+        if ($st && $clean_prefix !~ $NEW_MSG_BOUNDARY) {
             Irssi::timeout_remove($st->{timer}) if defined $st->{timer};
             my $cont_msg = $msg;
             $cont_msg =~ s/^\s*$FMT_RE$TS_PAT$FMT_RE\s*//;
