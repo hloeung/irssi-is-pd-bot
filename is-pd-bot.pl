@@ -708,7 +708,9 @@ sub signal_message_public {
         $clean_prefix =~ s/^\s*$TS_PAT\s*//;
         if ($st && $clean_prefix !~ /^\s*(?:\[|\xF0\x9F\xAE\x87|🮇|\|)/) {
             Irssi::timeout_remove($st->{timer}) if defined $st->{timer};
-            $msg = _join_messages($st->{msg}, $msg);
+            my $cont_msg = $msg;
+            $cont_msg =~ s/^\s*$FMT_RE$TS_PAT$FMT_RE\s*//;
+            $msg = _join_messages($st->{msg}, $cont_msg);
             delete $REJOIN_BUFFER{$key};
             unless (_is_line_open($msg)) {
                 local $REJOINING = 1;
