@@ -437,7 +437,26 @@ sub timer_rejoin_flush {
     Irssi::signal_emit('message public', $st->{server}, $st->{msg}, $st->{nick}, $st->{address}, $st->{target});
 }
 
-my $FMT_RE = qr/(?:[\x02\x04\x0f\x11\x16\x1d\x1e\x1f]|\x03(?:\d{1,2}(?:,\d{1,2})?)?)*/;
+my $FMT_BYTE = qr/(?:[\x02\x04\x0f\x11\x16\x1d\x1e\x1f]|\x03(?:\d{1,2}(?:,\d{1,2})?)?)/;
+my $FMT_RE   = qr/$FMT_BYTE*/;
+
+sub _format_thread_tag {
+    my ($tag) = @_;
+    return $tag unless defined $tag && length $tag;
+
+    # Shorten any unshortened @@<id> markers inside brackets
+    $tag =~ s/\@\@([0-9a-z]{26}|\$[0-9A-Za-z\-_\.]{43})/short_thread_id($1)/ge;
+
+    # Ensure arrow indicator ↪ is present inside brackets
+    $tag =~ s/^\[(?![->|↪])/\[↪/;
+
+    # Colorize using the primary thread ID if tag is not already color-coded
+    if ($tag !~ /\x03/ && $tag =~ /([0-9a-z]{1,26})/i) {
+        my $col = thread_color($1);
+        $tag = "${col}${tag}\x0f";
+    }
+    return $tag;
+}
 
 sub _compact_format_card {
     my ($lines) = @_;
@@ -451,15 +470,23 @@ sub _compact_format_card {
     }
     return @$lines unless @block_lines;
 
-    # Main line: extract colored thread tag, description, and PagerDuty URL
-    my ($tag, $pd_url, $desc) = ('', '', '');
+    # Main line: extract replay timestamp, thread tag, description, and PagerDuty URL
+    my ($ts, $tag, $pd_url, $desc) = ('', '', '', '');
     if ($main) {
         my $m = $main;
         $m =~ s/\s*\(re\s*\@.*?\)\s*$//;
         $m =~ s/(?:\xc2\xa0|\x{a0})/ /g;
-        if ($m =~ s/^($FMT_RE\[(?:->|↪)?(?:\@\@)?[^\]]+\]$FMT_RE)\s*//) {
-            $tag = $1;
+
+        # Extract replay timestamp [YYYY-MM-DD HH:MM] if present
+        if ($m =~ s/^($FMT_RE\[\d{4}-\d{2}-\d{2} \d{2}:\d{2}(?::\d{2})?\]$FMT_RE)\s*//) {
+            $ts = $1;
         }
+
+        # Extract thread tag [@@...], [↪...], or [->...]
+        if ($m =~ s/^($FMT_RE\[(?:->|↪)?(?:\@\@)?[^\]]+\]$FMT_RE)\s*//) {
+            $tag = _format_thread_tag($1);
+        }
+
         if ($m =~ s/\s*\((https?:\/\/[^\s()]+)\)\s*$//) {
             $pd_url = $1;
         }
@@ -467,7 +494,7 @@ sub _compact_format_card {
         $desc = $m;
     }
 
-    # Extract colored bar prefix from the first block line
+    # Extract colored bar from the first block line (preserves red, yellow, green, or blue pipe/block)
     my $bar = "🮇 ";
     if (@block_lines && $block_lines[0] =~ /(?:^|$FMT_RE\[[^\]]+\]$FMT_RE\s*)($FMT_RE\s*(?:🮇|\||\xF0\x9F\xAE\x87)\s*\x0f?)/) {
         $bar = $1;
@@ -476,7 +503,8 @@ sub _compact_format_card {
         $bar .= " ";
     }
 
-    # Omission logic: drop header, row, and Actions; retain all other lines
+    # Filter block lines: OMIT table header, table row, and Actions title.
+    #    KEEP everything else and seamlessly stitch wrapped continuation lines!
     my ($alert_id, $status, $assignee) = ('', '', '');
     my $in_table_row = 0;
     my @kept_lines;
@@ -485,8 +513,13 @@ sub _compact_format_card {
         my $content = $bl;
         $content =~ s/(?:\xc2\xa0|\x{a0})/ /g;
 
-        # Strip thread tag and bar marker
+        # Strip timestamp prefix if present
+        $content =~ s/^$FMT_RE\[\d{4}-\d{2}-\d{2} \d{2}:\d{2}(?::\d{2})?\]$FMT_RE\s*//;
+
+        # Strip thread tag prefix if present
         $content =~ s/^$FMT_RE\[(?:->|↪)?(?:\@\@)?[^\]]+\]$FMT_RE\s*//;
+
+        # Strip bar prefix
         $content =~ s/^$FMT_RE(?:\xF0\x9F\xAE\x87|🮇|\|)\x0f?\s*//;
         $content =~ s/^\s+|\s+$//g;
         next if $content eq '';
@@ -494,19 +527,19 @@ sub _compact_format_card {
         my $clean = _clean_text($content);
         $clean =~ s/^\s+|\s+$//g;
 
-        # Omit 1: Table header (matches "\x02Alert ID ... Status ... Assignee\x02")
+        # Omit Table header (e.g. \x02Alert ID ... Status ... Assignee\x02)
         if ($clean =~ /^Alert ID\s{2,}/) {
             $in_table_row = 1;
             next;
         }
 
-        # Omit 2: Table data row (extract fields into line 1, then omit)
+        # Omit Table data row (absorb values into line 1, then omit)
         if ($in_table_row) {
             my @parts = split(/\s{2,}/, $content);
             if (@parts >= 2) {
                 my $aid = _clean_text($parts[0]);
                 $aid =~ s/^\s+|\s+$//g;
-                $alert_id = $aid;
+                $alert_id = length($aid) ? "\x02$aid\x02" : '';
 
                 $status = $parts[1];
                 $status =~ s/^\s+|\s+$//g;
@@ -522,26 +555,36 @@ sub _compact_format_card {
             next;
         }
 
-        # Omit 3: Actions header (matches "\x02Actions\x02")
+        # Omit "Actions" title (e.g. \x02Actions\x02)
         if ($clean =~ /^Actions\s*$/) {
             next;
         }
 
-        # Everything else: KEEP (standardize leading bullet to ➥)
-        $content =~ s/^(?:➥|\xE2\x9E\xA5|[-•*])\s*/➥ /;
-        push @kept_lines, $content;
+        # EVERYTHING ELSE: Keep it!
+        # If it starts with a bullet marker, standardize to '➥ '
+        if ($content =~ s/^(?:➥|\xE2\x9E\xA5|[-•*])\s*/➥ /) {
+            push @kept_lines, $content;
+        } elsif (@kept_lines) {
+            # Continuation line without a bullet marker: stitch onto the previous line
+            my $sep = ($kept_lines[-1] =~ m{(?:https?://\S*|\()\z} || $kept_lines[-1] =~ /\s\z/) ? '' : ' ';
+            $kept_lines[-1] .= $sep . $content;
+        } else {
+            push @kept_lines, $content;
+        }
     }
 
-    # Construct output lines
+    # Construct compact output
     my @out;
-    my $first = join(' ', grep { length($_) } ($tag, $status, $alert_id, $desc));
+    my $first = join(' ', grep { length($_) } ($ts, $tag, $status, $alert_id, $desc));
     $first .= " @ $assignee" if length($assignee);
     push @out, $first if length($first);
 
-    my $pfx = length($tag) ? "$tag " : "";
-    push @out, "${pfx}${bar}➥ PagerDuty ($pd_url)" if length($pd_url);
+    my $bullet_pfx = join(' ', grep { length($_) } ($ts, $tag));
+    $bullet_pfx .= " " if length($bullet_pfx);
+
+    push @out, "${bullet_pfx}${bar}➥ \x1f\x1dPagerDuty\x1d\x1f (\x1d$pd_url\x1d)" if length($pd_url);
     foreach my $l (@kept_lines) {
-        push @out, "${pfx}${bar}$l";
+        push @out, "${bullet_pfx}${bar}$l";
     }
 
     return @out;
@@ -559,10 +602,15 @@ sub compact_timer_flush {
     my $witem = $server ? $server->window_item_find($st->{target}) : undef;
 
     foreach my $l (@lines) {
+        # Escape '%' so Irssi does not interpret URLs as theme display formats
+        my $escaped = $l;
+        $escaped =~ s/%/%%/g;
+        my $formatted_line = "<$st->{nick}> $escaped";
+
         if ($witem) {
-            $witem->print($l, Irssi::MSGLEVEL_PUBLIC);
+            $witem->print($formatted_line, Irssi::MSGLEVEL_PUBLIC);
         } elsif ($server) {
-            Irssi::signal_emit('message public', $server, $l, $st->{nick}, $st->{address}, $st->{target});
+            $server->print($st->{target}, $formatted_line, Irssi::MSGLEVEL_PUBLIC);
         }
     }
 }
@@ -574,11 +622,12 @@ sub signal_message_public {
     return if $COMPACT_EMITTING;
     return unless $server && defined($msg) && defined($nick) && defined($target) && chatnet_enabled($server);
     my $bot_nick = ($BOT_NICK //= Irssi::settings_get_str('is_pd_bot_nick'));
-    return unless lc($nick) eq lc($bot_nick);
-
-    # Restrict rejoin, caching, and compact view to the configured pagerduty channel only
     my $pagerduty_channel = get_pagerduty_channel();
-    return unless lc($target) eq lc($pagerduty_channel);
+
+    # Match either #is-pagerduty from is-pd-bot OR &messages from is-pd-bot/#is-pagerduty
+    my $is_pd_chan       = (lc($target) eq lc($pagerduty_channel) && lc($nick) eq lc($bot_nick));
+    my $is_messages_chan = (lc($target) eq '&messages' && lc($nick) eq lc("$bot_nick/$pagerduty_channel"));
+    return unless ($is_pd_chan || $is_messages_chan);
 
     my $key = ($server->{tag} // '') . '/' . lc($target);
 
@@ -620,7 +669,7 @@ sub signal_message_public {
     # Core is-pd-bot incident caching (operates on complete lines)
     my $server_tag = $server->{tag};
 
-    if (lc($target) eq lc($pagerduty_channel)) {
+    if ($is_pd_chan || $is_messages_chan) {
         my $pd_id;
         my $cache = ($PD_CACHE{$server_tag} //= []);
 
@@ -631,8 +680,9 @@ sub signal_message_public {
         $clean_msg =~ s/\x03(?:\d{1,2}(?:,\d{1,2})?)?//g;
         $clean_msg =~ s/[\x02\x0f\x16\x1d\x1f]//g;
         $clean_msg =~ s/(?:\xc2\xa0|\x{a0})/ /g;
-        $clean_msg =~ s/\(re (?>[^()]|(?<paren>\((?>[^()]|(?&paren))*\)))*?\@\Q${bot_nick}\E: (?>[^()]|(?&paren))*\)//g;
-        $clean_msg =~ s/\(re [^)]*?\@\Q${bot_nick}\E: .*?\)//g;
+        my $bot_quote = qr/\Q${bot_nick}\E(?:\/\Q${pagerduty_channel}\E)?/;
+        $clean_msg =~ s/\(re (?>[^()]|(?<paren>\((?>[^()]|(?&paren))*\)))*?\@$bot_quote: (?>[^()]|(?&paren))*\)//g;
+        $clean_msg =~ s/\(re [^)]*?\@$bot_quote: .*?\)//g;
 
         # Extract thread ID from message brackets if present
         my $tid;
@@ -814,7 +864,9 @@ sub signal_message_public {
         return;
     }
 }
-Irssi::signal_add('message public', 'signal_message_public');
+
+Irssi::signal_add_first('message public', 'signal_message_public');
+
 Irssi::signal_add('server disconnected', sub {
     my ($server) = @_;
     return unless $server && defined $server->{tag};
@@ -836,7 +888,9 @@ sub signal_complete_word_pagerduty {
     my $server_tag = $window->{active_server}->{tag};
 
     my $pagerduty_channel = get_pagerduty_channel();
-    return unless (lc($window->{active}->{name}) eq lc($pagerduty_channel) || $window->{active}->{name} =~ /^@@/);
+    return unless (lc($window->{active}->{name}) eq lc($pagerduty_channel)
+                   || lc($window->{active}->{name}) eq '&messages'
+                   || $window->{active}->{name} =~ /^@@/);
 
     return unless $word =~ /^[PQ]/i;
 
@@ -904,7 +958,9 @@ sub cmd_pagerduty_cache_search {
     my ($data, $server, $wi) = @_;
 
     my $pagerduty_channel = get_pagerduty_channel();
-    return unless ref $wi and (lc($wi->{name}) eq lc($pagerduty_channel) || $wi->{name} =~ /^@@/);
+    return unless ref $wi and (lc($wi->{name}) eq lc($pagerduty_channel)
+                               || lc($wi->{name}) eq '&messages'
+                               || $wi->{name} =~ /^@@/);
 
     return unless chatnet_enabled($server);
 
