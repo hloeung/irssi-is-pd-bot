@@ -422,14 +422,37 @@ my $FMT_BYTE = qr/(?:[\x02\x04\x0f\x11\x16\x1d\x1e\x1f]|\x03(?:\d{1,2}(?:,\d{1,2
 my $FMT_RE   = qr/$FMT_BYTE*/;
 my $TS_PAT = qr/(?:\[\d{4}-\d{2}-\d{2} \d{2}:\d{2}(?::\d{2})?\]|\[\d{1,2}:\d{2}(?::\d{2})?\]|\d{1,2}:\d{2}(?::\d{2})?>)/;
 
-# Matches an unclosed wrapped URL (https://... allowing balanced internal parentheses),
+# Matches an unclosed wrapped URL (allowing balanced or unfinished internal parens),
 # an unclosed opening parenthesis, or an unclosed bare URL
-my $OPEN_URL_PAT = qr/(?:\(https?:\/\/(?>[^()]|(?<paren>\((?>[^()]|(?&paren))*\)))*|\(\s*|(?<!\()https?:\/\/\S+)\z/;
+my $OPEN_URL_PAT = qr{
+    (?:
+        \( https?://
+        (?>
+            [^()]+
+            |
+            \( (?> (?&UNC) \)? )
+        )*
+        \z
+        |
+        \(\s*\z
+        |
+        (?<!\()https?://\S+\z
+    )
+    (?(DEFINE)
+        (?<UNC>
+            (?>
+                [^()]+
+                |
+                \( (?> (?&UNC) \)? )
+            )*
+        )
+    )
+}x;
 
 sub _is_line_open {
     my ($s) = @_;
     my $t = _clean_text($s);
-    return 1 if $t =~ /\(https?:\/\/(?>[^()]|(?<paren>\((?>[^()]|(?&paren))*\)))*$/ || $t =~ /\(\s*$/;
+    return 1 if $t =~ $OPEN_URL_PAT;
     # Recognizable incomplete thread tag prefix (anchored at start of message)
     return 1 if $t =~ /^\s*(?:$TS_PAT\s+)?\[(?:(?:->|↪)(?:\@\@)?|\@\@)[^\]]*$/;
     # Preserves supported arrow patterns without URL
@@ -442,7 +465,8 @@ sub _is_line_open {
 
 sub _join_messages {
     my ($prev, $curr) = @_;
-    my $sep = ($prev =~ $OPEN_URL_PAT
+    my $clean_prev = _clean_text($prev);
+    my $sep = ($clean_prev =~ $OPEN_URL_PAT
             || $prev =~ m{^\s*(?:$FMT_RE$TS_PAT$FMT_RE\s+)?$FMT_RE\[(?:(?:->|↪)(?:\@\@)?|\@\@)[^\]]*\z}
             || $prev =~ /\s\z/) ? '' : ' ';
     return $prev . $sep . $curr;
@@ -617,7 +641,7 @@ sub _compact_format_card {
             next;
         }
 
-        # Exit Actions mode on plain section headings (e.g. Internal Discussion) or bold headings
+        # Exit Actions mode on plain section headings (e.g. Internal Discussion) or bold headings (\x02...\x02)
         if ($clean =~ /^Internal Discussion\s*$/i || $content =~ /^\s*\x02[^\x02\x0f]+(?:\x02\x0f?|\x0f)\s*$/) {
             $in_actions = 0;
             push @kept_lines, $content;
@@ -629,7 +653,7 @@ sub _compact_format_card {
             if ($content =~ s/^(?:➥|\xE2\x9E\xA5|\xE2\x80\xA2|[-*])\s*/➥ /) {
                 push @kept_lines, $content;
             } elsif (@kept_lines) {
-                my $sep = ($kept_lines[-1] =~ $OPEN_URL_PAT || $kept_lines[-1] =~ /\s\z/) ? '' : ' ';
+                my $sep = (_clean_text($kept_lines[-1]) =~ $OPEN_URL_PAT || $kept_lines[-1] =~ /\s\z/) ? '' : ' ';
                 $kept_lines[-1] .= $sep . $content;
             } else {
                 push @kept_lines, $content;
@@ -639,7 +663,7 @@ sub _compact_format_card {
             if ($content =~ s/^(?:➥|\xE2\x9E\xA5|\xE2\x80\xA2|[-*])\s*/➥ /) {
                 push @kept_lines, $content;
             } elsif (@kept_lines && _is_line_open($kept_lines[-1])) {
-                my $sep = ($kept_lines[-1] =~ $OPEN_URL_PAT || $kept_lines[-1] =~ /\s\z/) ? '' : ' ';
+                my $sep = (_clean_text($kept_lines[-1]) =~ $OPEN_URL_PAT || $kept_lines[-1] =~ /\s\z/) ? '' : ' ';
                 $kept_lines[-1] .= $sep . $content;
             } else {
                 push @kept_lines, $content;
