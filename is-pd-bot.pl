@@ -418,18 +418,28 @@ sub _clean_text {
     return $s;
 }
 
+my $TS_PAT = qr/(?:\[\d{4}-\d{2}-\d{2} \d{2}:\d{2}(?::\d{2})?\]|\[\d{1,2}:\d{2}(?::\d{2})?\]|\d{1,2}:\d{2}(?::\d{2})?>)/;
+
 sub _is_line_open {
     my ($s) = @_;
     my $t = _clean_text($s);
     return 1 if $t =~ /\(https?:\/\/[^\s)]*$/ || $t =~ /\(\s*$/;
-    return 1 if $t =~ /\[[^\]]*$/;
+    # Recognizable incomplete thread tag prefix (anchored at start of message)
+    return 1 if $t =~ /^\s*(?:$TS_PAT\s+)?\[(?:(?:->|↪)(?:\@\@)?|\@\@)[^\]]*$/;
+    # Preserves supported arrow patterns without URL
+    return 1 if $t =~ /(?:➥|\xE2\x9E\xA5)[^()]*$/ && $t !~ /https?:\/\//;
+    # Preserves action bullet fragments without URL before continuation
+    return 1 if $t =~ /(?:^|(?:🮇|\|))\s*(?:➥|\xE2\x9E\xA5|[-*])\s+[A-Za-z][^()]*$/ && $t !~ /https?:\/\//;
     return 1 if length($t) >= 350 && $t =~ /(?:^|\s)https?:\/\/\S+$/;
     return 0;
 }
 
 sub _join_messages {
     my ($prev, $curr) = @_;
-    my $sep = ($prev =~ m{(?:https?://\S*|\()\z} || $prev =~ /\s\z/) ? '' : ' ';
+    # Do not insert space separator for partial URLs or incomplete thread tag fragments
+    my $sep = ($prev =~ m{(?:https?://\S*|\()\z}
+            || $prev =~ m{^\s*(?:$TS_PAT\s+)?\[(?:(?:->|↪)(?:\@\@)?|\@\@)[^\]]*\z}
+            || $prev =~ /\s\z/) ? '' : ' ';
     return $prev . $sep . $curr;
 }
 
@@ -441,7 +451,6 @@ sub timer_rejoin_flush {
     Irssi::signal_emit('message public', $st->{server}, $st->{msg}, $st->{nick}, $st->{address}, $st->{target});
 }
 
-my $TS_PAT = qr/(?:\[\d{4}-\d{2}-\d{2} \d{2}:\d{2}(?::\d{2})?\]|\[\d{1,2}:\d{2}(?::\d{2})?\]|\d{1,2}:\d{2}(?::\d{2})?>)/;
 my $TID_TOKEN = qr/(?:(?:->|↪)?\@\@(?:[0-9a-z]{1,26}|\$[0-9A-Za-z\-_\.]{1,43})(?:…|\.\.\.)?|(?:->|↪)(?:[0-9a-z]{1,26}|\$[0-9A-Za-z\-_\.]{1,43})(?:…|\.\.\.)?|(?:[0-9a-f]{3}|[0-9a-z]{26}|\$[0-9A-Za-z\-_\.]{43}|[0-9a-z]{1,25}(?:…|\.\.\.)))/;
 my $TAG_PAT = qr/\[$TID_TOKEN(?:,\s*$TID_TOKEN)*\]/;
 my $FMT_BYTE = qr/(?:[\x02\x04\x0f\x11\x16\x1d\x1e\x1f]|\x03(?:\d{1,2}(?:,\d{1,2})?)?)/;
@@ -507,8 +516,9 @@ sub _compact_format_card {
     if ((!length($ts) || !length($tag)) && @block_lines) {
         my $bl0 = $block_lines[0];
         $bl0 =~ s/$SPACE_RE/ /g;
-        if (!length($ts) && $bl0 =~ s/^\s*($FMT_RE$TS_PAT$FMT_RE)\s*//) {
-            $ts = $1;
+        # Always strip block timestamp so subsequent tag extraction can match leading tag
+        if ($bl0 =~ s/^\s*($FMT_RE$TS_PAT$FMT_RE)\s*//) {
+            $ts = $1 unless length($ts);
         }
         if (!length($tag) && $bl0 =~ s/^\s*($FMT_RE$TAG_PAT$FMT_RE)\s*//) {
             $tag = $1;
@@ -685,6 +695,10 @@ sub signal_message_public {
     # Include sender nick in the rejoin key to keep &messages streams separate
     my $key = ($server->{tag} // '') . '/' . lc($target) . '/' . lc($nick);
 
+    # Core is-pd-bot incident caching (operates on complete lines)
+    my $server_tag = $server->{tag};
+    my $tid;
+
     # Line Healing (Rejoin split URLs and action bullets) - active in ALL bot channels
     if (Irssi::settings_get_bool('is_pd_bot_rejoin_urls') && !$REJOINING) {
         my $st = $REJOIN_BUFFER{$key};
@@ -719,27 +733,34 @@ sub signal_message_public {
                     my $is_block = ($msg =~ $BLOCK_PREFIX) ? 1 : 0;
                     my $line_tid;
 
-                    if ($msg =~ /\[(?:->|↪)?\@\@([0-9a-z]{1,26}|\$[0-9A-Za-z\-_\.]{1,43})/) {
+                    # Extract thread IDs only from leading tags after optional timestamp
+                    my $leading = $msg;
+                    $leading =~ s/^\s*//;
+                    $leading =~ s/^$FMT_RE$TS_PAT$FMT_RE\s*//;
+
+                    if ($leading =~ /^$FMT_RE\[(?:->|↪)?\@\@([0-9a-z]{1,26}|\$[0-9A-Za-z\-_\.]{1,43})/) {
                         $line_tid = $1;
-                    } elsif ($msg =~ /\[(?:->|↪)([0-9a-z]{1,26}|\$[0-9A-Za-z\-_\.]{1,43})(?:…|\.\.\.|\]|,)/) {
+                    } elsif ($leading =~ /^$FMT_RE\[(?:->|↪)([0-9a-z]{1,26}|\$[0-9A-Za-z\-_\.]{1,43})(?:…|\.\.\.|\]|,)/) {
                         $line_tid = $1;
-                    } elsif ($msg =~ /\[([0-9a-f]{3}|[0-9a-z]{26}|\$[0-9A-Za-z\-_\.]{1,43}|[0-9a-z]{1,25}(?:…|\.\.\.))\]/) {
+                    } elsif ($leading =~ /^$FMT_RE\[([0-9a-f]{3}|[0-9a-z]{26}|\$[0-9A-Za-z\-_\.]{1,43}|[0-9a-z]{1,25}(?:…|\.\.\.))\]/) {
                         $line_tid = $1;
                         $line_tid =~ s/(?:…|\.\.\.)$//;
                     }
                     $line_tid = resolve_thread_id($target, $line_tid) if $line_tid;
+
+                    # Expand cached thread ID prefixes before computing rejoin keys
+                    if ($line_tid && !is_canonical_tid($line_tid) && exists $THREAD_PD_MAP{$server_tag}
+                        && !exists $THREAD_PD_MAP{$server_tag}{$line_tid}) {
+                        my @matches = grep {
+                            is_canonical_tid($_) && index($_, $line_tid) == 0
+                        } keys %{$THREAD_PD_MAP{$server_tag}};
+                        $line_tid = $matches[0] if @matches == 1;
+                    }
+
                     if ($is_block) {
                         $line_tid //= $COMPACT_ACTIVE_TID{$channel_key};
                     }
                     $pending_compact_key = $channel_key . '/' . ($line_tid // 'notid');
-
-                    # Coordinate compact deadline: extend this card's compact timer
-                    # so it cannot expire while rejoining is still pending.
-                    if (exists $COMPACT_BUFFER{$pending_compact_key}) {
-                        Irssi::timeout_remove($COMPACT_BUFFER{$pending_compact_key}->{timer}) if defined $COMPACT_BUFFER{$pending_compact_key}->{timer};
-                        my $c_timeout = Irssi::settings_get_int('is_pd_bot_compact_timeout') || 500;
-                        $COMPACT_BUFFER{$pending_compact_key}->{timer} = Irssi::timeout_add_once($ms + $c_timeout, 'compact_timer_flush', $pending_compact_key);
-                    }
                 }
             }
 
@@ -764,10 +785,6 @@ sub signal_message_public {
     my $is_messages_chan = (lc($target) eq '&messages' && lc($nick) eq lc("$bot_nick/$pagerduty_channel"));
     return unless ($is_pd_chan || $is_messages_chan);
 
-    # Core is-pd-bot incident caching (operates on complete lines)
-    my $server_tag = $server->{tag};
-    my $tid;
-
     my $status_pattern = qr/(?:🚨 TRIGGERED|🆗 ACKNOWLEDGED|(?:‼|‼️|!!) UNACKNOWLEDGED|📤 ESCALATED|📥 (?:RE)?ASSIGNED|💤 SNOOZED|✅ RESOLVED)/;
 
     my $clean_msg = $msg;
@@ -778,12 +795,16 @@ sub signal_message_public {
     $clean_msg =~ s/\(re (?>[^()]|(?<paren>\((?>[^()]|(?&paren))*\)))*?\@$bot_quote: (?>[^()]|(?&paren))*\)//g;
     $clean_msg =~ s/\(re [^)]*?\@$bot_quote: .*?\)//g;
 
-    # Extract thread ID from message brackets if present
-    if ($clean_msg =~ /\[(?:->|↪)?\@\@([0-9a-z]{1,26}|\$[0-9A-Za-z\-_\.]{1,43})/) {
+    # Extract thread ID only from leading tag after optional timestamp
+    my $leading_tag_msg = $clean_msg;
+    $leading_tag_msg =~ s/^\s*//;
+    $leading_tag_msg =~ s/^$TS_PAT\s*//;
+
+    if ($leading_tag_msg =~ /^\[(?:->|↪)?\@\@([0-9a-z]{1,26}|\$[0-9A-Za-z\-_\.]{1,43})/) {
         $tid = $1;
-    } elsif ($clean_msg =~ /\[(?:->|↪)([0-9a-z]{1,26}|\$[0-9A-Za-z\-_\.]{1,43})(?:…|\.\.\.|\]|,)/) {
+    } elsif ($leading_tag_msg =~ /^\[(?:->|↪)([0-9a-z]{1,26}|\$[0-9A-Za-z\-_\.]{1,43})(?:…|\.\.\.|\]|,)/) {
         $tid = $1;
-    } elsif ($clean_msg =~ /\[([0-9a-f]{3}|[0-9a-z]{26}|\$[0-9A-Za-z\-_\.]{1,43}|[0-9a-z]{1,25}(?:…|\.\.\.))\]/) {
+    } elsif ($leading_tag_msg =~ /^\[([0-9a-f]{3}|[0-9a-z]{26}|\$[0-9A-Za-z\-_\.]{1,43}|[0-9a-z]{1,25}(?:…|\.\.\.))\]/) {
         $tid = $1;
         $tid =~ s/(?:…|\.\.\.)$//;
     }
