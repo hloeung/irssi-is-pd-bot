@@ -426,19 +426,18 @@ sub _is_line_open {
     return 1 if $t =~ /\(https?:\/\/[^\s)]*$/ || $t =~ /\(\s*$/;
     # Recognizable incomplete thread tag prefix (anchored at start of message)
     return 1 if $t =~ /^\s*(?:$TS_PAT\s+)?\[(?:(?:->|↪)(?:\@\@)?|\@\@)[^\]]*$/;
-    # Preserves supported arrow patterns without URL
-    return 1 if $t =~ /(?:➥|\xE2\x9E\xA5)[^()]*$/ && $t !~ /https?:\/\//;
-    # Preserves action bullet fragments without URL before continuation
-    return 1 if $t =~ /(?:^|(?:🮇|\|))\s*(?:➥|\xE2\x9E\xA5|[-*])\s+[A-Za-z][^()]*$/ && $t !~ /https?:\/\//;
+    # Preserves action bullet fragments that wrapped before the target URL
+    return 1 if $t =~ /(?:🮇|\|)\s*(?:➥|\xE2\x9E\xA5)\s+[A-Za-z][^()]*$/ && $t !~ /https?:\/\//;
+    return 1 if $t =~ /(?:🮇|\|)\s*[-*]\s+(?:View|Playbook|Source|Action|Silence)[^()]*$/i && $t !~ /https?:\/\//;
     return 1 if length($t) >= 350 && $t =~ /(?:^|\s)https?:\/\/\S+$/;
     return 0;
 }
 
 sub _join_messages {
     my ($prev, $curr) = @_;
-    # Do not insert space separator for partial URLs or incomplete thread tag fragments
+    # Do not insert space separator for partial URLs or color-formatted incomplete thread tag fragments
     my $sep = ($prev =~ m{(?:https?://\S*|\()\z}
-            || $prev =~ m{^\s*(?:$TS_PAT\s+)?\[(?:(?:->|↪)(?:\@\@)?|\@\@)[^\]]*\z}
+            || $prev =~ m{^\s*(?:$FMT_RE$TS_PAT$FMT_RE\s+)?$FMT_RE\[(?:(?:->|↪)(?:\@\@)?|\@\@)[^\]]*\z}
             || $prev =~ /\s\z/) ? '' : ' ';
     return $prev . $sep . $curr;
 }
@@ -703,15 +702,16 @@ sub signal_message_public {
     if (Irssi::settings_get_bool('is_pd_bot_rejoin_urls') && !$REJOINING) {
         my $st = $REJOIN_BUFFER{$key};
 
-        # If waiting on an open line and current message is not a new post/header, stitch them
+        # If waiting on an open line and current message is not a new post/header/bullet, stitch them
         my $clean_prefix = _clean_text($msg);
         $clean_prefix =~ s/^\s*$TS_PAT\s*//;
-        if ($st && $clean_prefix !~ /^\s*(?:\[|\xF0\x9F\xAE\x87|🮇|\|)/) {
+        if ($st && $clean_prefix !~ /^\s*(?:\[|\xF0\x9F\xAE\x87|🮇|\||(?:➥|\xE2\x9E\xA5|[-*])\s)/) {
             Irssi::timeout_remove($st->{timer}) if defined $st->{timer};
             my $cont_msg = $msg;
             $cont_msg =~ s/^\s*$FMT_RE$TS_PAT$FMT_RE\s*//;
             $msg = _join_messages($st->{msg}, $cont_msg);
             delete $REJOIN_BUFFER{$key};
+
             unless (_is_line_open($msg)) {
                 local $REJOINING = 1;
                 Irssi::signal_emit('message public', $server, $msg, $nick, $address, $target);
