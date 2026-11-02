@@ -418,6 +418,8 @@ sub _clean_text {
     return $s;
 }
 
+my $FMT_BYTE = qr/(?:[\x02\x04\x0f\x11\x16\x1d\x1e\x1f]|\x03(?:\d{1,2}(?:,\d{1,2})?)?)/;
+my $FMT_RE   = qr/$FMT_BYTE*/;
 my $TS_PAT = qr/(?:\[\d{4}-\d{2}-\d{2} \d{2}:\d{2}(?::\d{2})?\]|\[\d{1,2}:\d{2}(?::\d{2})?\]|\d{1,2}:\d{2}(?::\d{2})?>)/;
 
 sub _is_line_open {
@@ -452,8 +454,6 @@ sub timer_rejoin_flush {
 
 my $TID_TOKEN = qr/(?:(?:->|↪)?\@\@(?:[0-9a-z]{1,26}|\$[0-9A-Za-z\-_\.]{1,43})(?:…|\.\.\.)?|(?:->|↪)(?:[0-9a-z]{1,26}|\$[0-9A-Za-z\-_\.]{1,43})(?:…|\.\.\.)?|(?:[0-9a-f]{3}|[0-9a-z]{26}|\$[0-9A-Za-z\-_\.]{43}|[0-9a-z]{1,25}(?:…|\.\.\.)))/;
 my $TAG_PAT = qr/\[$TID_TOKEN(?:,\s*$TID_TOKEN)*\]/;
-my $FMT_BYTE = qr/(?:[\x02\x04\x0f\x11\x16\x1d\x1e\x1f]|\x03(?:\d{1,2}(?:,\d{1,2})?)?)/;
-my $FMT_RE   = qr/$FMT_BYTE*/;
 my $BLOCK_PREFIX = qr/^\s*(?:$FMT_RE$TS_PAT$FMT_RE\s+)?(?:$FMT_RE$TAG_PAT$FMT_RE\s+)?$FMT_RE\s*(?:🮇|\||\xF0\x9F\xAE\x87)/;
 
 sub _format_thread_tag {
@@ -526,7 +526,7 @@ sub _compact_format_card {
 
     # Extract colored bar from the first block line (preserves red, yellow, green, or blue pipe/block)
     my $bar = "🮇 ";
-    if (@block_lines && $block_lines[0] =~ /(?:^\s*|$FMT_RE(?:$TS_PAT\s+)?(?:$TAG_PAT\s+)?$FMT_RE)($FMT_RE\s*(?:🮇|\||\xF0\x9F\xAE\x87)\s*\x0f?)/) {
+    if (@block_lines && $block_lines[0] =~ /^\s*(?:$FMT_RE$TS_PAT$FMT_RE\s+)?(?:$FMT_RE$TAG_PAT$FMT_RE\s+)?($FMT_RE\s*(?:🮇|\||\xF0\x9F\xAE\x87)\s*(?:\x0f|\x03)?)/) {
         $bar = $1;
         $bar =~ s/^\s+|\s+$//g;
         $bar .= "\x0f" unless $bar =~ /\x0f$/;
