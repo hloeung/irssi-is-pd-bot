@@ -455,10 +455,9 @@ sub _is_line_open {
     return 1 if $t =~ $OPEN_URL_PAT;
     # Recognizable incomplete thread tag prefix (anchored at start of message)
     return 1 if $t =~ /^\s*(?:$TS_PAT\s+)?\[(?:(?:->|↪)(?:\@\@)?|\@\@)[^\]]*$/;
-    # Preserves supported arrow patterns without URL
-    return 1 if $t =~ /(?:➥|\xE2\x9E\xA5)[^()]*$/ && $t !~ /https?:\/\//;
-    # Preserves action bullet fragments without URL before continuation
-    return 1 if $t =~ /(?:^|(?:🮇|\|))\s*(?:➥|\xE2\x9E\xA5|[-*])\s+[A-Za-z][^()]*$/ && $t !~ /https?:\/\//;
+    # Preserves action bullet fragments that wrapped before the target URL
+    return 1 if $t =~ /(?:🮇|\|)\s*(?:➥|\xE2\x9E\xA5)\s+[A-Za-z][^()]*$/ && $t !~ /https?:\/\//;
+    return 1 if $t =~ /(?:🮇|\|)\s*[-*]\s+(?:View|Playbook|Source|Action|Silence)[^()]*$/i && $t !~ /https?:\/\//;
     return 1 if length($t) >= 350 && $t =~ /(?:^|\s)https?:\/\/\S+$/;
     return 0;
 }
@@ -649,8 +648,8 @@ sub _compact_format_card {
         }
 
         if ($in_actions) {
-            # In Actions section: start new line on bullet; otherwise join to previous line
-            if ($content =~ s/^(?:➥|\xE2\x9E\xA5|\xE2\x80\xA2|[-*])\s*/➥ /) {
+            # In Actions section: start new line on bullet with 2-space action indent; otherwise join
+            if ($content =~ s/^(?:➥|\xE2\x9E\xA5|\xE2\x80\xA2|[-*])\s*/ ➥ /) {
                 push @kept_lines, $content;
             } elsif (@kept_lines) {
                 my $sep = (_clean_text($kept_lines[-1]) =~ $OPEN_URL_PAT || $kept_lines[-1] =~ /\s\z/) ? '' : ' ';
@@ -680,7 +679,7 @@ sub _compact_format_card {
     my $bullet_pfx = join(' ', grep { length($_) } ($ts, $tag));
     $bullet_pfx .= " " if length($bullet_pfx);
 
-    push @out, "${bullet_pfx}${bar}➥ \x1f\x1dPagerDuty\x1d\x1f (\x1d$pd_url\x1d)" if length($pd_url);
+    push @out, "${bullet_pfx}${bar} ➥ \x1f\x1dPagerDuty\x1d\x1f (\x1d$pd_url\x1d)" if length($pd_url);
     foreach my $l (@kept_lines) {
         push @out, "${bullet_pfx}${bar}$l";
     }
