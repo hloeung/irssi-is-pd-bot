@@ -422,10 +422,61 @@ my $FMT_BYTE = qr/(?:[\x02\x04\x0f\x11\x16\x1d\x1e\x1f]|\x03(?:\d{1,2}(?:,\d{1,2
 my $FMT_RE   = qr/$FMT_BYTE*/;
 my $TS_PAT = qr/(?:\[\d{4}-\d{2}-\d{2} \d{2}:\d{2}(?::\d{2})?\]|\[\d{1,2}:\d{2}(?::\d{2})?\]|\d{1,2}:\d{2}(?::\d{2})?>)/;
 
+# Matches an unclosed wrapped URL (allowing balanced or unfinished internal parens)
+# or an unclosed opening parenthesis
+my $UNCLOSED_URL_PAT = qr{
+    (?:
+        \( https?://
+        (?>
+            [^()]+
+            |
+            \( (?> (?&UNC) \)? )
+        )*
+        \z
+        |
+        \(\s*\z
+    )
+    (?(DEFINE)
+        (?<UNC>
+            (?>
+                [^()]+
+                |
+                \( (?> (?&UNC) \)? )
+            )*
+        )
+    )
+}x;
+
+# Matches an unclosed wrapped URL, open paren, or bare URL when selecting a join separator
+my $URL_SEP_PAT = qr{
+    (?:
+        \( https?://
+        (?>
+            [^()]+
+            |
+            \( (?> (?&UNC) \)? )
+        )*
+        \z
+        |
+        \(\s*\z
+        |
+        (?<!\S)https?://\S+\z
+    )
+    (?(DEFINE)
+        (?<UNC>
+            (?>
+                [^()]+
+                |
+                \( (?> (?&UNC) \)? )
+            )*
+        )
+    )
+}x;
+
 sub _is_line_open {
     my ($s) = @_;
     my $t = _clean_text($s);
-    return 1 if $t =~ /\(https?:\/\/[^\s)]*$/ || $t =~ /\(\s*$/;
+    return 1 if $t =~ $UNCLOSED_URL_PAT;
     # Recognizable incomplete thread tag prefix (anchored at start of message)
     return 1 if $t =~ /^\s*(?:$TS_PAT\s+)?\[(?:(?:->|↪)(?:\@\@)?|\@\@)[^\]]*$/;
     # Preserves action bullet fragments that wrapped before the target URL
@@ -437,8 +488,8 @@ sub _is_line_open {
 
 sub _join_messages {
     my ($prev, $curr) = @_;
-    # Do not insert space separator for partial URLs or color-formatted incomplete thread tag fragments
-    my $sep = ($prev =~ m{(?:https?://\S*|\()\z}
+    my $clean_prev = _clean_text($prev);
+    my $sep = ($clean_prev =~ $URL_SEP_PAT
             || $prev =~ m{^\s*(?:$FMT_RE$TS_PAT$FMT_RE\s+)?$FMT_RE\[(?:(?:->|↪)(?:\@\@)?|\@\@)[^\]]*\z}
             || $prev =~ /\s\z/) ? '' : ' ';
     return $prev . $sep . $curr;
@@ -538,11 +589,15 @@ sub _compact_format_card {
     my ($alert_id, $status, $assignee) = ('', '', '');
     my (@table_headers, @extra_fields);
     my $in_table_row = 0;
+    my $in_actions = 0;
     my @kept_lines;
 
     foreach my $bl (@block_lines) {
         my $content = $bl;
         $content =~ s/$SPACE_RE/ /g;
+
+        # Strip thread reply quote if wrapped onto attachment block lines
+        $content =~ s/\s*\(re\s*\@.*?\)\s*$//;
 
         # Strip leading whitespace accepted by classifier before removing prefixes
         $content =~ s/^\s*//;
@@ -555,7 +610,7 @@ sub _compact_format_card {
         my $clean = _clean_text($content);
         $clean =~ s/^\s+|\s+$//g;
 
-        # Omit Table header (e.g. \x02Alert ID ... Status ... Assignee\x02) and record column order
+        # Omit Table header (\x02Alert ID ... Status ... Assignee\x02) and record column order
         if ($clean =~ /^Alert ID\s{2,}/) {
             @table_headers = split(/\s{2,}/, $clean);
             $in_table_row = 1;
@@ -576,23 +631,20 @@ sub _compact_format_card {
                         my $aid = _clean_text($row{$k});
                         $aid =~ s/^\s+|\s+$//g;
                         $alert_id = length($aid) ? "\x02$aid\x02" : '';
-                        delete $row{$k};
                     } elsif ($k =~ /^Status/i) {
                         $status = $row{$k};
                         $status =~ s/^\s+|\s+$//g;
-                        delete $row{$k};
                     } elsif ($k =~ /^Assignee/i) {
                         my $asn = _clean_text($row{$k});
                         $asn =~ s/^\@\s*//;
                         $asn =~ s/^\s+|\s+$//g;
                         $assignee = ($asn ne '[unknown to me]') ? $asn : '';
-                        delete $row{$k};
                     }
                 }
 
                 # Preserve additional fields (e.g. Service)
                 for my $h (@table_headers) {
-                    if (exists $row{$h} && length $row{$h}) {
+                    if ($h !~ /^(?:Alert ID|Status|Assignee)/i && exists $row{$h} && length $row{$h}) {
                         my $val = _clean_text($row{$h});
                         $val =~ s/^\s+|\s+$//g;
                         push @extra_fields, "($val)" if length $val;
@@ -606,21 +658,39 @@ sub _compact_format_card {
             next;
         }
 
-        # Omit "Actions" title (e.g. \x02Actions\x02)
-        if ($clean =~ /^Actions\s*$/) {
+        # Omit "Actions" title (\x02Actions\x02) and switch to actions mode
+        if ($clean =~ /^Actions\s*$/i) {
+            $in_actions = 1;
             next;
         }
 
-        # EVERYTHING ELSE: Keep it!
-        # Standardize complete UTF-8 bullet outside character classes
-        if ($content =~ s/^(?:➥|\xE2\x9E\xA5|\xE2\x80\xA2|[-*])\s*/➥ /) {
+        # Exit Actions mode on plain section headings (e.g. Internal Discussion) or bold headings (\x02...\x02)
+        if ($clean =~ /^Internal Discussion\s*$/i || $content =~ /^\s*\x02[^\x02\x0f]+(?:\x02\x0f?|\x0f)\s*$/) {
+            $in_actions = 0;
             push @kept_lines, $content;
-        } elsif (@kept_lines && _is_line_open($kept_lines[-1])) {
-            # Only stitch when the preceding line is unfinished
-            my $sep = ($kept_lines[-1] =~ m{(?:https?://\S*|\()\z} || $kept_lines[-1] =~ /\s\z/) ? '' : ' ';
-            $kept_lines[-1] .= $sep . $content;
+            next;
+        }
+
+        if ($in_actions) {
+            # In Actions section: start new line on bullet with 2-space action indent; otherwise join
+            if ($content =~ s/^(?:➥|\xE2\x9E\xA5|\xE2\x80\xA2|[-*])\s*/ ➥ /) {
+                push @kept_lines, $content;
+            } elsif (@kept_lines) {
+                my $sep = (_clean_text($kept_lines[-1]) =~ $URL_SEP_PAT || $kept_lines[-1] =~ /\s\z/) ? '' : ' ';
+                $kept_lines[-1] .= $sep . $content;
+            } else {
+                push @kept_lines, $content;
+            }
         } else {
-            push @kept_lines, $content;
+            # Outside Actions section: standardize bullets and stitch unfinished lines
+            if ($content =~ s/^(?:➥|\xE2\x9E\xA5|\xE2\x80\xA2|[-*])\s*/➥ /) {
+                push @kept_lines, $content;
+            } elsif (@kept_lines && _is_line_open($kept_lines[-1])) {
+                my $sep = (_clean_text($kept_lines[-1]) =~ $URL_SEP_PAT || $kept_lines[-1] =~ /\s\z/) ? '' : ' ';
+                $kept_lines[-1] .= $sep . $content;
+            } else {
+                push @kept_lines, $content;
+            }
         }
     }
 
@@ -633,7 +703,7 @@ sub _compact_format_card {
     my $bullet_pfx = join(' ', grep { length($_) } ($ts, $tag));
     $bullet_pfx .= " " if length($bullet_pfx);
 
-    push @out, "${bullet_pfx}${bar}➥ \x1f\x1dPagerDuty\x1d\x1f (\x1d$pd_url\x1d)" if length($pd_url);
+    push @out, "${bullet_pfx}${bar} ➥ \x1f\x1dPagerDuty\x1d\x1f (\x1d$pd_url\x1d)" if length($pd_url);
     foreach my $l (@kept_lines) {
         push @out, "${bullet_pfx}${bar}$l";
     }
