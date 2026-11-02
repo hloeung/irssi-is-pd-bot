@@ -508,11 +508,11 @@ sub _is_line_open {
     return 1 if $t =~ /(?:🮇|\|)\s*(?:➥|\xE2\x9E\xA5)\s+[A-Za-z][^()]*$/ && $t !~ /https?:\/\//;
     return 1 if $t =~ /(?:🮇|\|)\s*[-*]\s+(?:View|Playbook|Source|Action|Silence)[^()]*$/i && $t !~ /https?:\/\//;
 
-    # Long bare URLs split across IRC lines (preserved independently of punctuation)
-    return 1 if length($latest_t) >= 350 && $latest_t =~ /(?:^|\s)https?:\/\/\S+$/;
+    # Long bare URLs split across IRC lines (checks accumulated text for URL, latest fragment for length)
+    return 1 if length($latest_t) >= 350 && $t =~ /(?:^|\s)https?:\/\/\S+$/;
 
-    # Long card prose with unclosed description parenthesis (requires transport-wrapping evidence)
-    my $is_card_ctx = ($t =~ /^\s*(?:$TS_PAT\s+)?\[(?:->|↪)?(?:\@\@)?[0-9a-z]/ || $t =~ /\[FIRING/);
+    # Long card prose with unclosed description parenthesis (including Matrix $ IDs)
+    my $is_card_ctx = ($t =~ /^\s*(?:$TS_PAT\s+)?\[(?:->|↪)?(?:\@\@)?[0-9a-zA-Z\$]/ || $t =~ /\[FIRING/);
     return 1 if $is_card_ctx && length($latest_t) >= 350 && $t =~ $UNCLOSED_PAREN_PAT;
 
     return 0;
@@ -816,21 +816,22 @@ sub signal_message_public {
     # Line Healing (Rejoin split URLs and action bullets) - active in ALL bot channels
     if (Irssi::settings_get_bool('is_pd_bot_rejoin_urls') && !$REJOINING) {
         my $st = $REJOIN_BUFFER{$key};
+        my $join_count = 1;
+        my $latest_fragment = $msg;
 
         # If waiting on an open line and current message is not a new post/header, stitch them
         my $clean_prefix = _clean_text($msg);
         $clean_prefix =~ s/^\s*$TS_PAT\s*//;
-        # Check against recognized thread tags and attachment bars, not arbitrary bracketed text
-        if ($st && $clean_prefix !~ /^\s*(?:$TAG_PAT|\xF0\x9F\xAE\x87|🮇|\|)/) {
+        if ($st && $clean_prefix !~ /^\s*(?:$TAG_PAT|\[(?:FIRING|RESOLVED)|(?:\xF0\x9F\xAE\x87|🮇|\|)|(?:➥|\xE2\x9E\xA5|[-*])\s)/) {
             Irssi::timeout_remove($st->{timer}) if defined $st->{timer};
             my $cont_msg = $msg;
             $cont_msg =~ s/^\s*$FMT_RE$TS_PAT$FMT_RE\s*//;
             $msg = _join_messages($st->{msg}, $cont_msg);
-            my $join_count = ($st->{count} // 1) + 1;
+            $join_count = ($st->{count} // 1) + 1;
+            $latest_fragment = $cont_msg;
             delete $REJOIN_BUFFER{$key};
 
-            # Evaluate length heuristics on the latest fragment, not accumulated text; bound buffer growth
-            unless ($join_count < 5 && _is_line_open($msg, $cont_msg)) {
+            unless ($join_count < 5 && _is_line_open($msg, $latest_fragment)) {
                 local $REJOINING = 1;
                 Irssi::signal_emit('message public', $server, $msg, $nick, $address, $target);
                 Irssi::signal_stop();
@@ -841,22 +842,7 @@ sub signal_message_public {
             timer_rejoin_flush($key);
         }
 
-        if (_is_line_open($msg, $msg)) {
-            my $ms = Irssi::settings_get_int('is_pd_bot_rejoin_timeout') || 500;
-            $REJOIN_BUFFER{$key} = {
-                server  => $server,
-                msg     => $msg,
-                nick    => $nick,
-                address => $address,
-                target  => $target,
-                count   => 1,
-                timer   => Irssi::timeout_add_once($ms, 'timer_rejoin_flush', $key),
-            };
-            Irssi::signal_stop();
-            return;
-        }
-
-        if (_is_line_open($msg)) {
+        if (_is_line_open($msg, $latest_fragment)) {
             my $ms = Irssi::settings_get_int('is_pd_bot_rejoin_timeout') || 500;
             my $pending_compact_key;
 
@@ -908,12 +894,12 @@ sub signal_message_public {
                 address     => $address,
                 target      => $target,
                 compact_key => $pending_compact_key,
+                count       => $join_count,
                 timer       => Irssi::timeout_add_once($ms, 'timer_rejoin_flush', $key),
             };
             Irssi::signal_stop();
             return;
         }
-
     }
 
     # Restrict PagerDuty caching and compact formatting to #is-pagerduty and &messages
