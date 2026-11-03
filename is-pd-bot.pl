@@ -687,7 +687,7 @@ sub _compact_format_card {
                     } elsif ($k =~ /^Assignee/i) {
                         my $asn = _clean_text($row{$k});
                         $asn =~ s/^\s+|\s+$//g;
-                        $assignee = ($asn ne '[unknown to me]') ? $asn : '';
+                        $assignee = ($asn !~ /^(?:\@\s*)?\[unknown to me\]$/i) ? $asn : '';
                     }
                 }
 
@@ -745,10 +745,11 @@ sub _compact_format_card {
 
     # Ensure status has bold (and italics for TRIGGERED) if not already formatted
     if (length($status) && $status !~ /\x02/) {
+        $status =~ s/\x0f+$//;
         if ($status =~ /TRIGGERED/) {
-            $status = "\x02\x1d$status\x1d\x02";
+            $status = "\x02\x1d$status\x0f";
         } else {
-            $status = "\x02$status\x02";
+            $status = "\x02$status\x0f";
         }
     }
 
@@ -1112,7 +1113,10 @@ sub signal_message_public {
     # Presentation Layer (Buffer card if compact format enabled)
     if (Irssi::settings_get_bool('is_pd_bot_compact_format')) {
         # Avoid re-buffering output that has already been compacted by another script or prior pass
-        my $is_already_compacted = ($msg =~ /$status_pattern\s+(?:\x02)?(?:P[A-Z0-9]{6}|Q[A-Z0-9]{13})\b/
+        my $id_pattern = qr/(?:P[A-Z0-9]{6}|Q[A-Z0-9]{13})/;
+        my $is_already_compacted = ($msg !~ /^\s*(?:$FMT_RE$TS_PAT$FMT_RE\s+)?(?:$FMT_RE$TAG_PAT$FMT_RE\s+)?$FMT_RE\s*(?:🮇|\||\xF0\x9F\xAE\x87)/
+            && ($msg =~ /(?:\x02)?$id_pattern(?:\x02)?\s+$status_pattern/
+                || $msg =~ /$status_pattern\s+(?:\x02)?$id_pattern\b/)
             || $msg =~ /(?:🮇|\|)\s*(?:➥|\xE2\x9E\xA5)\s*(?:\x1f\x1d)?PagerDuty(?:\x1d\x1f)?\s*\(/) ? 1 : 0;
         return if $is_already_compacted;
 
