@@ -686,7 +686,6 @@ sub _compact_format_card {
                         $status =~ s/^\s+|\s+$//g;
                     } elsif ($k =~ /^Assignee/i) {
                         my $asn = _clean_text($row{$k});
-                        $asn =~ s/^\@\s*//;
                         $asn =~ s/^\s+|\s+$//g;
                         $assignee = ($asn ne '[unknown to me]') ? $asn : '';
                     }
@@ -744,10 +743,32 @@ sub _compact_format_card {
         }
     }
 
-    # Construct compact output
+    # Ensure status has bold (and italics for TRIGGERED) if not already formatted
+    if (length($status) && $status !~ /\x02/) {
+        if ($status =~ /TRIGGERED/) {
+            $status = "\x02\x1d$status\x1d\x02";
+        } else {
+            $status = "\x02$status\x02";
+        }
+    }
+
+    # Construct compact output matching historical templates
     my @out;
-    my $first = join(' ', grep { length($_) } ($ts, $tag, $status, $alert_id, $desc, @extra_fields));
-    $first .= " @ $assignee" if length($assignee);
+    my $first;
+    my $lead = join(' ', grep { length($_) } ($ts, $tag, $alert_id, $status));
+
+    if (length($assignee)) {
+        if ($status =~ /(?:ACKNOWLEDGED|RESOLVED)/) {
+            # Template: {id} {status} by {assignee} : {desc} [{extra}]
+            $first = join(' ', grep { length($_) } ($lead, "by $assignee :", $desc, @extra_fields));
+        } else {
+            # Template: {id} {status} {desc} @ {assignee} [{extra}]
+            my $asn_str = ($assignee =~ /^@/) ? $assignee : "@ $assignee";
+            $first = join(' ', grep { length($_) } ($lead, $desc, $asn_str, @extra_fields));
+        }
+    } else {
+        $first = join(' ', grep { length($_) } ($lead, $desc, @extra_fields));
+    }
     push @out, $first if length($first);
 
     my $bullet_pfx = join(' ', grep { length($_) } ($block_ts, $block_tag));
