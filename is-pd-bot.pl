@@ -686,9 +686,8 @@ sub _compact_format_card {
                         $status =~ s/^\s+|\s+$//g;
                     } elsif ($k =~ /^Assignee/i) {
                         my $asn = _clean_text($row{$k});
-                        $asn =~ s/^\@\s*//;
                         $asn =~ s/^\s+|\s+$//g;
-                        $assignee = ($asn ne '[unknown to me]') ? $asn : '';
+                        $assignee = ($asn !~ /^(?:\@\s*)?\[unknown to me\]$/i) ? $asn : '';
                     }
                 }
 
@@ -744,10 +743,33 @@ sub _compact_format_card {
         }
     }
 
-    # Construct compact output
+    # Ensure status has bold (and italics for TRIGGERED) if not already formatted
+    if (length($status) && $status !~ /\x02/) {
+        $status =~ s/\x0f+$//;
+        if ($status =~ /TRIGGERED/) {
+            $status = "\x02\x1d$status\x0f";
+        } else {
+            $status = "\x02$status\x0f";
+        }
+    }
+
+    # Construct compact output matching historical templates
     my @out;
-    my $first = join(' ', grep { length($_) } ($ts, $tag, $status, $alert_id, $desc, @extra_fields));
-    $first .= " @ $assignee" if length($assignee);
+    my $first;
+    my $lead = join(' ', grep { length($_) } ($ts, $tag, $alert_id, $status));
+
+    if (length($assignee)) {
+        if ($status =~ /\b(?:ACKNOWLEDGED|RESOLVED)\b/) {
+            # Template: {id} {status} by {assignee} : {desc} [{extra}]
+            $first = join(' ', grep { length($_) } ($lead, "by $assignee :", $desc, @extra_fields));
+        } else {
+            # Template: {id} {status} {desc} @ {assignee} [{extra}]
+            my $asn_str = ($assignee =~ /^@/) ? $assignee : "@ $assignee";
+            $first = join(' ', grep { length($_) } ($lead, $desc, $asn_str, @extra_fields));
+        }
+    } else {
+        $first = join(' ', grep { length($_) } ($lead, $desc, @extra_fields));
+    }
     push @out, $first if length($first);
 
     my $bullet_pfx = join(' ', grep { length($_) } ($block_ts, $block_tag));
@@ -1091,8 +1113,11 @@ sub signal_message_public {
     # Presentation Layer (Buffer card if compact format enabled)
     if (Irssi::settings_get_bool('is_pd_bot_compact_format')) {
         # Avoid re-buffering output that has already been compacted by another script or prior pass
-        my $is_already_compacted = ($msg =~ /$status_pattern\s+(?:\x02)?(?:P[A-Z0-9]{6}|Q[A-Z0-9]{13})\b/
-            || $msg =~ /(?:🮇|\|)\s*(?:➥|\xE2\x9E\xA5)\s*(?:\x1f\x1d)?PagerDuty(?:\x1d\x1f)?\s*\(/) ? 1 : 0;
+        my $id_pattern = qr/(?:P[A-Z0-9]{6}|Q[A-Z0-9]{13})/;
+        my $is_already_compacted = ($clean_msg !~ /^\s*(?:$TS_PAT\s+)?(?:$TAG_PAT\s+)?(?:🮇|\||\xF0\x9F\xAE\x87)/
+            && ($clean_msg =~ /\b$id_pattern\s+$status_pattern/
+                || $clean_msg =~ /$status_pattern\s+$id_pattern\b/)
+            || $clean_msg =~ /(?:🮇|\|)\s*(?:➥|\xE2\x9E\xA5)\s*PagerDuty\s*\(/) ? 1 : 0;
         return if $is_already_compacted;
 
         # Check block prefix at the valid anchor position
