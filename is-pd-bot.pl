@@ -758,7 +758,7 @@ sub _compact_format_card {
     my $lead = join(' ', grep { length($_) } ($ts, $tag, $alert_id, $status));
 
     if (length($assignee)) {
-        if ($status =~ /(?:ACKNOWLEDGED|RESOLVED)/) {
+        if ($status =~ /\b(?:ACKNOWLEDGED|RESOLVED)\b/) {
             # Template: {id} {status} by {assignee} : {desc} [{extra}]
             $first = join(' ', grep { length($_) } ($lead, "by $assignee :", $desc, @extra_fields));
         } else {
