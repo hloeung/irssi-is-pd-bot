@@ -1114,10 +1114,10 @@ sub signal_message_public {
     if (Irssi::settings_get_bool('is_pd_bot_compact_format')) {
         # Avoid re-buffering output that has already been compacted by another script or prior pass
         my $id_pattern = qr/(?:P[A-Z0-9]{6}|Q[A-Z0-9]{13})/;
-        my $is_already_compacted = ($msg !~ /^\s*(?:$FMT_RE$TS_PAT$FMT_RE\s+)?(?:$FMT_RE$TAG_PAT$FMT_RE\s+)?$FMT_RE\s*(?:🮇|\||\xF0\x9F\xAE\x87)/
-            && ($msg =~ /(?:\x02)?$id_pattern(?:\x02)?\s+$status_pattern/
-                || $msg =~ /$status_pattern\s+(?:\x02)?$id_pattern\b/)
-            || $msg =~ /(?:🮇|\|)\s*(?:➥|\xE2\x9E\xA5)\s*(?:\x1f\x1d)?PagerDuty(?:\x1d\x1f)?\s*\(/) ? 1 : 0;
+        my $is_already_compacted = ($clean_msg !~ /^\s*(?:$TS_PAT\s+)?(?:$TAG_PAT\s+)?(?:🮇|\||\xF0\x9F\xAE\x87)/
+            && ($clean_msg =~ /\b$id_pattern\s+$status_pattern/
+                || $clean_msg =~ /$status_pattern\s+$id_pattern\b/)
+            || $clean_msg =~ /(?:🮇|\|)\s*(?:➥|\xE2\x9E\xA5)\s*PagerDuty\s*\(/) ? 1 : 0;
         return if $is_already_compacted;
 
         # Check block prefix at the valid anchor position
