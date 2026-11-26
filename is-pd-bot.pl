@@ -504,6 +504,7 @@ my $URL_SEP_PAT = qr{
 
 my $IRC_LINK_OPEN  = qr/(?:[\x02\x11\x16\x1d\x1e\x1f]|\x03\d{1,2}(?:,\d{1,2})?|\x04[0-9a-fA-F]{6}(?:,[0-9a-fA-F]{6})?)*/;
 my $IRC_LINK_CLOSE = qr/[\x02\x03\x04\x0f\x11\x16\x1d\x1e\x1f]*/;
+my $URL_CHAR       = qr/[^\s()\x02\x03\x04\x0f\x11\x16\x1d\x1e\x1f]/;
 my $ACTION_LINK_RE = qr{
     ➥\s+
     ($IRC_LINK_OPEN)
@@ -511,19 +512,18 @@ my $ACTION_LINK_RE = qr{
     [^\x02\x03\x04\x0f\x11\x16\x1d\x1e\x1f]*?
     ($IRC_LINK_CLOSE)
     (?:\x20|\xc2\xa0|\x{00a0})+
-    ($IRC_LINK_OPEN)
-    \( https?://
-        (?>
-            [^()\s]+
-            |
-            \( (?> (?&BURL) ) \)
-        )+
-    \)
-    ($IRC_LINK_CLOSE)
+    ($IRC_LINK_OPEN \( $FMT_RE)
+    https?://
+    (?>
+        $URL_CHAR+
+        |
+        \( (?> (?&BURL) ) \)
+    )+
+    ($FMT_RE \) $IRC_LINK_CLOSE)
     (?(DEFINE)
         (?<BURL>
             (?>
-                [^()\s]+
+                $URL_CHAR+
                 |
                 \( (?> (?&BURL) ) \)
             )*
@@ -806,7 +806,7 @@ sub _compact_format_card {
     $bullet_pfx .= " " if length($bullet_pfx);
 
     if (length($pd_url)) {
-        my ($lbl_open, $lbl_close, $url_open, $url_close) = ("\x1d\x1f", "\x1f\x1d", "", "");
+        my ($lbl_open, $lbl_close, $url_open, $url_close) = ("\x1d\x1f", "\x1f\x1d", "(", ")");
 
         for my $l (@kept_lines) {
             if ($l =~ $ACTION_LINK_RE) {
@@ -815,7 +815,7 @@ sub _compact_format_card {
             }
         }
 
-        push @out, "${bullet_pfx}${bar} ➥ ${lbl_open}PagerDuty${lbl_close} ${url_open}($pd_url)${url_close}";
+        push @out, "${bullet_pfx}${bar} ➥ ${lbl_open}PagerDuty${lbl_close} ${url_open}${pd_url}${url_close}";
     }
     foreach my $l (@kept_lines) {
         push @out, "${bullet_pfx}${bar}$l";
