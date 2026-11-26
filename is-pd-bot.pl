@@ -414,11 +414,12 @@ sub _clean_text {
     return '' unless defined $s;
     $s =~ s/$SPACE_RE/ /g;
     $s =~ s/\x03(?:\d{1,2}(?:,\d{1,2})?)?//g;
-    $s =~ s/[\x02\x04\x0f\x11\x16\x1d\x1e\x1f]//g;
+    $s =~ s/\x04(?:[0-9a-fA-F]{6}(?:,[0-9a-fA-F]{6})?)?//g;
+    $s =~ s/[\x02\x0f\x11\x16\x1d\x1e\x1f]//g;
     return $s;
 }
 
-my $FMT_BYTE     = qr/(?:[\x02\x04\x0f\x11\x16\x1d\x1e\x1f]|\x03(?:\d{1,2}(?:,\d{1,2})?)?)/;
+my $FMT_BYTE     = qr/(?:[\x02\x0f\x11\x16\x1d\x1e\x1f]|\x03(?:\d{1,2}(?:,\d{1,2})?)?|\x04(?:[0-9a-fA-F]{6}(?:,[0-9a-fA-F]{6})?)?)/;
 my $FMT_RE       = qr/$FMT_BYTE*/;
 my $TS_PAT       = qr/(?:\[\d{4}-\d{2}-\d{2} \d{2}:\d{2}(?::\d{2})?\]|\[\d{1,2}:\d{2}(?::\d{2})?\]|\d{1,2}:\d{2}(?::\d{2})?>)/;
 my $TID_TOKEN    = qr/(?:(?:->|↪)?\@\@(?:[0-9a-z]{1,26}|\$[0-9A-Za-z\-_\.]{1,43})(?:…|\.\.\.)?|(?:->|↪)(?:[0-9a-z]{1,26}|\$[0-9A-Za-z\-_\.]{1,43})(?:…|\.\.\.)?|(?:[0-9a-f]{3}|[0-9a-z]{26}|\$[0-9A-Za-z\-_\.]{43}|[0-9a-z]{1,25}(?:…|\.\.\.)))/;
@@ -496,6 +497,35 @@ my $URL_SEP_PAT = qr{
                 [^()]+
                 |
                 \( (?> (?&UNC) \)? )
+            )*
+        )
+    )
+}x;
+
+my $IRC_LINK_OPEN  = qr/(?:[\x02\x11\x16\x1d\x1e\x1f]|\x03\d{1,2}(?:,\d{1,2})?|\x04[0-9a-fA-F]{6}(?:,[0-9a-fA-F]{6})?)*/;
+my $IRC_LINK_CLOSE = qr/[\x02\x03\x04\x0f\x11\x16\x1d\x1e\x1f]*/;
+my $ACTION_LINK_RE = qr{
+    ➥\s+
+    ($IRC_LINK_OPEN)
+    [^\x02\x03\x04\x0f\x11\x16\x1d\x1e\x1f(\s]
+    [^\x02\x03\x04\x0f\x11\x16\x1d\x1e\x1f]*?
+    ($IRC_LINK_CLOSE)
+    (?:\x20|\xc2\xa0|\x{00a0})+
+    ($IRC_LINK_OPEN)
+    \( https?://
+        (?>
+            [^()\s]+
+            |
+            \( (?> (?&BURL) ) \)
+        )+
+    \)
+    ($IRC_LINK_CLOSE)
+    (?(DEFINE)
+        (?<BURL>
+            (?>
+                [^()\s]+
+                |
+                \( (?> (?&BURL) ) \)
             )*
         )
     )
@@ -775,7 +805,18 @@ sub _compact_format_card {
     my $bullet_pfx = join(' ', grep { length($_) } ($block_ts, $block_tag));
     $bullet_pfx .= " " if length($bullet_pfx);
 
-    push @out, "${bullet_pfx}${bar} ➥ \x1f\x1dPagerDuty\x1d\x1f (\x1d$pd_url\x1d)" if length($pd_url);
+    if (length($pd_url)) {
+        my ($lbl_open, $lbl_close, $url_open, $url_close) = ("\x1d\x1f", "\x1f\x1d", "", "");
+
+        for my $l (@kept_lines) {
+            if ($l =~ $ACTION_LINK_RE) {
+                ($lbl_open, $lbl_close, $url_open, $url_close) = ($1, $2, $3, $4);
+                last;
+            }
+        }
+
+        push @out, "${bullet_pfx}${bar} ➥ ${lbl_open}PagerDuty${lbl_close} ${url_open}($pd_url)${url_close}";
+    }
     foreach my $l (@kept_lines) {
         push @out, "${bullet_pfx}${bar}$l";
     }
@@ -939,7 +980,8 @@ sub signal_message_public {
 
     my $clean_msg = $msg;
     $clean_msg =~ s/\x03(?:\d{1,2}(?:,\d{1,2})?)?//g;
-    $clean_msg =~ s/[\x02\x0f\x16\x1d\x1f]//g;
+    $clean_msg =~ s/\x04(?:[0-9a-fA-F]{6}(?:,[0-9a-fA-F]{6})?)?//g;
+    $clean_msg =~ s/[\x02\x0f\x11\x16\x1d\x1e\x1f]//g;
     $clean_msg =~ s/$SPACE_RE/ /g;
     my $bot_quote = qr/\Q${bot_nick}\E(?:\/\Q${pagerduty_channel}\E)?/;
     $clean_msg =~ s/\(re (?>[^()]|(?<paren>\((?>[^()]|(?&paren))*\)))*?\@$bot_quote: (?>[^()]|(?&paren))*\)//g;
