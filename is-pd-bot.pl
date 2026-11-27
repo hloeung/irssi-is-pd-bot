@@ -423,7 +423,7 @@ my $FMT_BYTE     = qr/(?:[\x02\x0f\x11\x16\x1d\x1e\x1f]|\x03(?:\d{1,2}(?:,\d{1,2
 my $FMT_RE       = qr/$FMT_BYTE*/;
 my $TS_PAT       = qr/(?:\[\d{4}-\d{2}-\d{2} \d{2}:\d{2}(?::\d{2})?\]|\[\d{1,2}:\d{2}(?::\d{2})?\]|\d{1,2}:\d{2}(?::\d{2})?>)/;
 my $TID_TOKEN    = qr/(?:(?:->|↪)?\@\@(?:[0-9a-z]{1,26}|\$[0-9A-Za-z\-_\.]{1,43})(?:…|\.\.\.)?|(?:->|↪)(?:[0-9a-z]{1,26}|\$[0-9A-Za-z\-_\.]{1,43})(?:…|\.\.\.)?|(?:[0-9a-f]{3}|[0-9a-z]{26}|\$[0-9A-Za-z\-_\.]{43}|[0-9a-z]{1,25}(?:…|\.\.\.)))/;
-my $TAG_PAT      = qr/\[$TID_TOKEN(?:,\s*$TID_TOKEN)*\]/;
+my $TAG_PAT      = qr/\[$FMT_RE$TID_TOKEN$FMT_RE(?:,(?:$FMT_BYTE|\s)*$TID_TOKEN$FMT_RE)*\]/;
 my $BLOCK_PREFIX = qr/^\s*(?:$FMT_RE$TS_PAT$FMT_RE\s+)?(?:$FMT_RE$TAG_PAT$FMT_RE\s+)?$FMT_RE\s*(?:🮇|\||\xF0\x9F\xAE\x87)/;
 
 # Distinguishes genuine bot post boundaries from bracketed/bullet prose continuations
@@ -561,7 +561,7 @@ sub _join_messages {
     my ($prev, $curr) = @_;
     my $clean_prev = _clean_text($prev);
     my $sep = ($clean_prev =~ $URL_SEP_PAT
-            || $prev =~ m{^\s*(?:$FMT_RE$TS_PAT$FMT_RE\s+)?$FMT_RE\[(?:(?:->|↪)(?:\@\@)?|\@\@)[^\]]*\z}
+            || $prev =~ m{^\s*(?:$FMT_RE$TS_PAT$FMT_RE\s+)?$FMT_RE\[$FMT_RE(?:(?:->|↪)(?:\@\@)?|\@\@)[^\]]*\z}
             || $prev =~ /\s\z/) ? '' : ' ';
     return $prev . $sep . $curr;
 }
@@ -925,15 +925,15 @@ sub signal_message_public {
                     my $line_tid;
 
                     # Extract thread IDs only from leading tags after optional timestamp
-                    my $leading = $msg;
+                    my $leading = _clean_text($msg);
                     $leading =~ s/^\s*//;
-                    $leading =~ s/^$FMT_RE$TS_PAT$FMT_RE\s*//;
+                    $leading =~ s/^$TS_PAT\s*//;
 
-                    if ($leading =~ /^$FMT_RE\[(?:->|↪)?\@\@([0-9a-z]{1,26}|\$[0-9A-Za-z\-_\.]{1,43})/) {
+                    if ($leading =~ /^\[(?:->|↪)?\@\@([0-9a-z]{1,26}|\$[0-9A-Za-z\-_\.]{1,43})/) {
                         $line_tid = $1;
-                    } elsif ($leading =~ /^$FMT_RE\[(?:->|↪)([0-9a-z]{1,26}|\$[0-9A-Za-z\-_\.]{1,43})(?:…|\.\.\.|\]|,)/) {
+                    } elsif ($leading =~ /^\[(?:->|↪)([0-9a-z]{1,26}|\$[0-9A-Za-z\-_\.]{1,43})(?:…|\.\.\.|\]|,)/) {
                         $line_tid = $1;
-                    } elsif ($leading =~ /^$FMT_RE\[([0-9a-f]{3}|[0-9a-z]{26}|\$[0-9A-Za-z\-_\.]{1,43}|[0-9a-z]{1,25}(?:…|\.\.\.))\]/) {
+                    } elsif ($leading =~ /^\[([0-9a-f]{3}|[0-9a-z]{26}|\$[0-9A-Za-z\-_\.]{1,43}|[0-9a-z]{1,25}(?:…|\.\.\.))\]/) {
                         $line_tid = $1;
                         $line_tid =~ s/(?:…|\.\.\.)$//;
                     }
